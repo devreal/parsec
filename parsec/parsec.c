@@ -1628,6 +1628,24 @@ size_t parsec_destruct_dependencies(parsec_dependencies_t* d)
     return ret;
 }
 
+int parsec_taskpool_add_task_class(parsec_taskpool_t *tp, parsec_task_class_t* tc)
+{
+    if( tc->task_class_id >= tp->task_classes_length ) {
+        /* we need to resize the array large enopugh to account for the new task class */
+        int i, length = tp->task_classes_length + 8;
+        if( tc->task_class_id >= length )
+            length = tc->task_class_id + 8;
+
+        tp->task_classes_array = (parsec_task_class_t**)realloc(tp->task_classes_array,
+                                                                sizeof(parsec_task_class_t*) * length);
+        for( i = tp->task_classes_length; i < length; i++ )
+            tp->task_classes_array[i] = NULL;
+        tp->task_classes_length = length;
+    }
+    tp->task_classes_array[tc->task_class_id] = tc;
+    return PARSEC_SUCCESS;
+}
+
 int
 parsec_taskpool_set_complete_callback( parsec_taskpool_t* tp,
                                        parsec_event_cb_t complete_cb,
@@ -2340,8 +2358,8 @@ parsec_debug_taskpool_count_local_tasks( parsec_taskpool_t *tp,
 void parsec_debug_taskpool_local_tasks( parsec_taskpool_t *tp,
                                         int show_remote, int show_startup, int show_complete)
 {
-    uint32_t fi;
     int nlocal, ntotal, nreleased;
+    uint32_t fi;
     /* The taskpool has not been initialized yet, or it has been completed */
     if( tp->dependencies_array == NULL )
         return;

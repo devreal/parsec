@@ -13,6 +13,8 @@
 #include "parsec/class/lifo.h"
 #include "parsec/parsec_description_structures.h"
 
+BEGIN_C_DECLS
+
 typedef unsigned long remote_dep_datakey_t;
 
 #define PARSEC_ACTION_DEPS_MASK                  0x00FFFFFF
@@ -180,5 +182,7 @@ int parsec_remote_dep_propagate(parsec_execution_stream_t* es,
 #endif /* DISTRIBUTED */
 
 /** @} */
+
+END_C_DECLS
 
 #endif /* __USE_REMOTE_DEP_H__ */

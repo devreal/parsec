@@ -235,7 +235,6 @@ struct parsec_dtd_taskpool_s {
     int                          total_tasks_to_be_exec;
     uint32_t                     local_task_inserted;
     uint8_t                      function_counter;
-    uint8_t                      flow_set_flag[PARSEC_DTD_NB_TASK_CLASSES];
     parsec_taskpool_wait_t      *wait_func;
     parsec_mempool_t            *hash_table_bucket_mempool;
     parsec_dtd_two_hash_table_t *two_hash_table;
@@ -256,7 +255,7 @@ struct parsec_dtd_task_class_s {
     parsec_dtd_funcptr_t    *fpointer;
     parsec_mempool_t         context_mempool;
     parsec_mempool_t         remote_task_mempool;
-    int                      index_of_rank_info;
+    int32_t                  flow_set_flag;
     int8_t                   dep_datatype_index;
     int8_t                   dep_out_index;
     int8_t                   dep_in_index;

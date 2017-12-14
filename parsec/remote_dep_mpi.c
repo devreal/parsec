@@ -38,7 +38,7 @@ static int remote_dep_nothread_send(parsec_execution_stream_t* es,
 static int remote_dep_nothread_memcpy(parsec_execution_stream_t* es,
                                       dep_cmd_item_t *item);
 
-static int remote_dep_dequeue_send(int rank, parsec_remote_deps_t* deps);
+int remote_dep_dequeue_send(int rank, parsec_remote_deps_t* deps);
 static int remote_dep_dequeue_new_taskpool(parsec_taskpool_t* tp);
 #ifdef PARSEC_REMOTE_DEP_USE_THREADS
 static int remote_dep_dequeue_init(parsec_context_t* context);
@@ -173,12 +173,21 @@ remote_dep_cmd_to_string(remote_dep_wire_activate_t* origin,
     parsec_task_t task;
 
     task.taskpool = parsec_taskpool_lookup( origin->taskpool_id );
-    if( NULL == task.taskpool ) return snprintf(str, len, "UNKNOWN_of_TASKPOOL_%d", origin->taskpool_id), str;
-    task.task_class   = task.taskpool->task_classes_array[origin->task_class_id];
-    if( NULL == task.task_class ) return snprintf(str, len, "UNKNOWN_of_TASKCLASS_%d", origin->task_class_id), str;
-    memcpy(&task.locals, origin->locals, sizeof(assignment_t) * task.task_class->nb_locals);
-    task.priority     = 0xFFFFFFFF;
-    return parsec_task_snprintf(str, len, &task);
+    if( NULL == task.taskpool ) {
+        snprintf(str, len, "UNKNOWN TASKPOOL_%d", origin->taskpool_id);
+    } else if( task.taskpool->task_classes_length > origin->task_class_id ) {
+        snprintf(str, len, "Unknown task class id %d (locally known %d)\n", origin->task_class_id, task.taskpool->task_classes_length);
+    } else {
+        task.task_class   = task.taskpool->task_classes_array[origin->task_class_id];
+        if( NULL == task.task_class ) {
+            snprintf(str, len, "UNKNOWN TASKCLASS_%d", origin->task_class_id);
+        } else {
+            memcpy(&task.locals, origin->locals, sizeof(assignment_t) * task.task_class->nb_locals);
+            task.priority     = 0xFFFFFFFF;
+            parsec_task_snprintf(str, len, &task);
+        }
+    }
+    return str;
 }
 
 static pthread_t dep_thread_id;
@@ -447,8 +456,8 @@ remote_dep_dequeue_delayed_dep_release(parsec_remote_deps_t *deps)
     return 1;
 }
 
-static int remote_dep_dequeue_send(int rank,
-                                   parsec_remote_deps_t* deps)
+int remote_dep_dequeue_send(int rank,
+                            parsec_remote_deps_t* deps)
 {
     dep_cmd_item_t* item = (dep_cmd_item_t*) calloc(1, sizeof(dep_cmd_item_t));
     OBJ_CONSTRUCT(item, parsec_list_item_t);
@@ -549,6 +558,10 @@ remote_dep_mpi_retrieve_datatype(parsec_execution_stream_t *eu,
     return PARSEC_ITERATE_STOP;
 }
 
+int (*parsec_ttg_get_datatype)(parsec_execution_stream_t* es,
+                               const parsec_task_t* task,
+                               parsec_remote_deps_t* origin) = NULL;
+
 /**
  * Retrieve the datatypes involved in this communication. In addition the flag
  * PARSEC_ACTION_RECV_INIT_REMOTE_DEPS set the priority to the maximum priority
@@ -558,8 +571,8 @@ static int
 remote_dep_get_datatypes(parsec_execution_stream_t* es,
                          parsec_remote_deps_t* origin)
 {
-    parsec_task_t task;
     uint32_t i, j, k, local_mask = 0;
+    parsec_task_t task;
 
     parsec_dtd_taskpool_t *dtd_tp = NULL;
     parsec_dtd_task_t *dtd_task = NULL;
@@ -569,7 +582,9 @@ remote_dep_get_datatypes(parsec_execution_stream_t* es,
     if( NULL == origin->taskpool )
         return -1; /* the parsec taskpool doesn't exist yet */
 
-    task.taskpool   = origin->taskpool;
+    task.priority = 0;  /* unknown yet */
+    task.taskpool = origin->taskpool;
+    assert(task.taskpool->task_classes_length > origin->msg.task_class_id);
     task.task_class = task.taskpool->task_classes_array[origin->msg.task_class_id];
 
     if( PARSEC_TASKPOOL_TYPE_DTD == origin->taskpool->taskpool_type ) {
@@ -580,10 +595,18 @@ remote_dep_get_datatypes(parsec_execution_stream_t* es,
             return -2; /* taskclass not yet discovered locally. Defer the task activation */
         }
     }
-
-    task.priority = 0;  /* unknown yet */
+    if( PARSEC_TASKPOOL_TYPE_TTG == origin->taskpool->taskpool_type ) {
+        origin->outgoing_mask = origin->incoming_mask;
+        return (*parsec_ttg_get_datatype)(es, &task, origin);
+    }
+    
     for(i = 0; i < task.task_class->nb_locals; i++)
         task.locals[i] = origin->msg.locals[i];
+
+    if( PARSEC_TASKPOOL_TYPE_DTD == origin->taskpool->taskpool_type ) {
+        dtd_tp = (parsec_dtd_taskpool_t *)origin->taskpool;
+        parsec_dtd_two_hash_table_lock(dtd_tp->two_hash_table);
+    }
 
     /* We need to convert from a dep_datatype_index mask into a dep_index
      * mask. However, in order to be able to use the above iterator we need to
@@ -665,6 +688,7 @@ remote_dep_release_incoming(parsec_execution_stream_t* es,
     origin->incoming_mask ^= complete_mask;
 
     task.taskpool = origin->taskpool;
+    assert(task.taskpool->task_classes_length > origin->msg.task_class_id);
     task.task_class = task.taskpool->task_classes_array[origin->msg.task_class_id];
     task.priority = origin->priority;
     for(i = 0; i < task.task_class->nb_locals;

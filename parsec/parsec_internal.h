@@ -82,6 +82,7 @@ typedef void (*parsec_destruct_fn_t)(parsec_taskpool_t* tp);
 #define PARSEC_TASKPOOL_TYPE_PTG       0x0001
 #define PARSEC_TASKPOOL_TYPE_COMPOUND  0x0002
 #define PARSEC_TASKPOOL_TYPE_DTD       0x0004
+#define PARSEC_TASKPOOL_TYPE_TTG       0x0008
 
 /**
  * @brief a PaRSEC taskpool represents an a collection of tasks (with or without their dependencies).
@@ -129,7 +130,6 @@ struct parsec_taskpool_s {
 };
 
 PARSEC_DECLSPEC OBJ_CLASS_DECLARATION(parsec_taskpool_t);
-
 /**
  * @brief Bitmask representing all possible devices
  */
@@ -511,6 +511,12 @@ int parsec_task_deps_with_final_output(const parsec_task_t *task,
                                       const dep_t **deps);
 
 int32_t parsec_ptg_update_runtime_task( parsec_taskpool_t *tp, int32_t nb_tasks );
+
+/**
+ * Add a task class to a taskpool. Resize the task class array if
+ * nevessary and update the length.
+ */
+int parsec_taskpool_add_task_class(parsec_taskpool_t *tp, parsec_task_class_t* tc);
 
 void parsec_dependencies_mark_task_as_startup(parsec_task_t* task, parsec_execution_stream_t *es);
 
