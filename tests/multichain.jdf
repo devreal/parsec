@@ -37,7 +37,7 @@ RW   B <- (i == 0)      ? descB(i, 0) : B HORIZONTAL(i-1)
        -> (i != (NI-1)) ? B HORIZONTAL(i+1)
 BODY
     if(verbose)
-        printf("HORIZONTAL(%d) [left-over tasks %d]\n", i, tp->super.nb_tasks);
+        printf("HORIZONTAL(%d) [left-over tasks %d]\n", i, tp->super.tdm.counters.nb_tasks);
 END
 
 VERTICAL(i, j)
@@ -52,7 +52,7 @@ RW   B <- (i == 0)      ? descB(i, 0) : B VERTICAL(i-1, j)
        -> (i != (NI-1)) ? B VERTICAL(i+1, j) : descB(i, 0)
 BODY
     if(verbose)
-        printf("VERTICAL(%d, %d) [left-over tasks %d]\n", i, j, tp->super.nb_tasks);
+        printf("VERTICAL(%d, %d) [left-over tasks %d]\n", i, j, tp->super.tdm.counters.nb_tasks);
 END
 
 extern "C" %{
@@ -201,7 +201,7 @@ int main(int argc, char* argv[])
         PARSEC_CHECK_ERROR(rc, "parsec_context_start");
 
         sleep(5);
-        printf("Main thread going for the wait (remaining tasks %d)\n", tp->super.nb_tasks);
+        printf("Main thread going for the wait (remaining tasks %d)\n", tp->super.tdm.counters.nb_tasks);
         /* By now most of the tasks should be completed */
         TIMER_START(time_elapsed);
         rc = parsec_context_wait(parsec);

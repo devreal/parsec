@@ -66,10 +66,10 @@ struct remote_dep_output_param_s {
      */
     parsec_list_item_t                    super;
     parsec_remote_deps_t                 *parent;
-    struct parsec_dep_data_description_s  data;        /**< The data propagated by this message. */
+    struct parsec_dep_data_description_s  data;       /**< The data propagated by this message. */
     uint32_t                             deps_mask;   /**< A bitmask of all the output dependencies
-                                                       propagated by this message. The bitmask uses
-                                                       depedencies indexes not flow indexes. */
+                                                       *   propagated by this message. The bitmask uses
+                                                       *   depedencies indexes not flow indexes. */
     int32_t                              priority;    /**< the priority of the message */
     uint32_t                             count_bits;  /**< The number of participants */
     uint32_t*                            rank_bits;   /**< The array of bits representing the propagation path */
@@ -77,18 +77,18 @@ struct remote_dep_output_param_s {
 
 struct parsec_remote_deps_s {
     parsec_list_item_t               super;
-    parsec_lifo_t                   *origin;    /**< The memory arena where the data pointer is comming from */
-    struct parsec_taskpool_s        *taskpool;  /**< parsec taskpool generating this data transfer */
-    int32_t                          pending_ack;  /**< Number of releases before completion */
-    int32_t                          from;    /**< From whom we received the control */
-    int32_t                          root;    /**< The root of the control message */
-    uint32_t                         incoming_mask;  /**< track all incoming actions (receives) */
-    uint32_t                         outgoing_mask;  /**< track all outgoing actions (send) */
-    remote_dep_wire_activate_t       msg;     /**< A copy of the message control */
+    parsec_lifo_t                   *origin;        /**< The memory arena where the data pointer is comming from */
+    struct parsec_taskpool_s        *taskpool;      /**< parsec taskpool generating this data transfer */
+    int32_t                          pending_ack;   /**< Number of releases before completion */
+    int32_t                          from;          /**< From whom we received the control */
+    int32_t                          root;          /**< The root of the control message */
+    uint32_t                         incoming_mask; /**< track all incoming actions (receives) */
+    uint32_t                         outgoing_mask; /**< track all outgoing actions (send) */
+    remote_dep_wire_activate_t       msg;           /**< A copy of the message control */
     int32_t                          max_priority;
     int32_t                          priority;
     uint32_t                        *remote_dep_fw_mask;  /**< list of peers already notified about
-                                                            * the control sequence (only used for control messages) */
+                                                           * the control sequence (only used for control messages) */
     struct data_repo_entry_s        *repo_entry;
     struct remote_dep_output_param_s output[1];
 };
@@ -168,6 +168,9 @@ int parsec_remote_dep_propagate(parsec_execution_stream_t* es,
                                parsec_remote_deps_t* deps);
 #endif
 
+/* This function sends a delayed deps */
+int parsec_remote_dep_send(int rank, parsec_remote_deps_t *deps);
+
 #else
 #define parsec_remote_dep_init(ctx)            1
 #define parsec_remote_dep_fini(ctx)            0
@@ -177,7 +180,84 @@ int parsec_remote_dep_propagate(parsec_execution_stream_t* es,
 #define parsec_remote_dep_activate(ctx, o, r) -1
 #define parsec_remote_dep_new_taskpool(ctx)    0
 #define remote_dep_mpi_initialize_execution_stream(ctx) 0
+#define parsec_remote_dep_send(r, deps)        0
 #endif /* DISTRIBUTED */
+
+/**
+ * @brief Sends a protocol-specific message to another process
+ *
+ * @details this function schedules the emission
+ *   of the message passed as parameter towards the destination rank.
+ *  @param[IN] dst_rank the destination process' rank
+ *  @param[IN] tag the tag of the message (same tag as the one returned by
+ *             parsec_comm_register_callback)
+ *  @param[IN] tp the taskpool related to the message (NULL if that
+ *        type of message is not linked to a taskpool -- see parsec_comm_register_callback)
+ *  @param[IN] msg the message to send
+ *  @param[IN] size the number of bytes to send
+ *  @return PARSEC_SUCCESS if the message is scheduled to be sent, a
+ *    (fatal) error notification otherwise
+ */
+int parsec_comm_send_message(int dst_rank, int tag, const parsec_taskpool_t *tp, const void *msg, size_t size);
+
+/**
+ * @brief Sends a protocol-specific message to another process with delay
+ *
+ * @details this function schedules the emission
+ *   of the message passed as parameter towards the destination rank, but not before
+ *   some delay has passed
+ *  @param[IN] dst_rank the destination process' rank
+ *  @param[IN] tag the tag of the message (same tag as the one returned by
+ *             parsec_comm_register_callback)
+ *  @param[IN] tp the taskpool related to the message (NULL if that
+ *        type of message is not linked to a taskpool -- see parsec_comm_register_callback)
+ *  @param[IN] msg the message to send
+ *  @param[IN] size the number of bytes to send
+ *  @param[IN] ms the number of milliseconds to delay the message
+ *  @return PARSEC_SUCCESS if the message is scheduled to be sent, a
+ *    (fatal) error notification otherwise
+ */
+int parsec_comm_send_message_with_delay(int dst_rank, int tag, const parsec_taskpool_t *tp, const void *msg, size_t size, int ms);
+
+/**
+ * @brief Receives a protocol-specific message from another process
+ *
+ * @details the communication subsystem calls this function when a
+ *          protocol-specific message is received.
+ *  @param[IN] src_rank the source process' rank
+ *  @param[IN] msg the message that was received
+ *  @param[IN] tp the taskpool related to the message (NULL if that type
+ *        of message is not linked to a taskpool -- see parsec_comm_register_callback(
+ *  @param[IN] size the number of bytes received
+ *  @return PARSEC_SUCCESS, or a (fatal) error notification
+ */
+typedef int (*parsec_comm_recv_message_t)(int src_rank, parsec_taskpool_t *tp, const void *msg, size_t size);
+
+/**
+ * @brief Register what function should be called when a protocol-specific 
+ *   message of a given tag is received.
+ *
+ * @details This function must be called in the same order on all ranks
+ *   so that it produces matching tags.
+ *  @param[OUT] tag a unique protocol identifier (to pass to comm_send_message)
+ *  @param[IN]  max_msg_size the number of bytes (max) of messages that can be
+ *              received.
+ *  @param[IN]  tp_flag does this type of message require a taskpool? If not 0,
+ *              messages will take / provide a taskpool argument and will be
+ *              delayed until the taskpool exists.
+ *  @param[IN]  cb the function to call when a messag with this tag is received.
+ *  @return PARSEC_SUCCESS, or a (fatal) error notification
+ */
+int parsec_comm_register_callback(int *tag, size_t max_msg_size, int tp_flag, parsec_comm_recv_message_t cb);
+
+/**
+ * @brief Unregister a callback previously registered with parsec_comm_register_callback
+ *
+ * @details This function must be called before parsec_fini.
+ *  @param[IN] tag the unique protocol identifier returned by parsec_comm_register_callback
+ *  @return PARSEC_SUCCESS, or a (fatal) error notification
+ */
+int parsec_comm_unregister_callback(int tag);
 
 /** @} */
 

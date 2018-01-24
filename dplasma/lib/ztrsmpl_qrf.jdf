@@ -584,7 +584,6 @@ BODY
             }
         }
     }
-    (void)parsec_atomic_fetch_sub_int32( &this_task->taskpool->nb_tasks, nb_tasks );
-
+    this_task->taskpool->tdm.module->taskpool_addto_nb_tasks(this_task->taskpool, -1);
 }
 END

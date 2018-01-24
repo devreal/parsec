@@ -527,8 +527,8 @@ parsec_map_operator_New(const parsec_tiled_matrix_dc_t* src,
 #  endif /* defined(PARSEC_PROF_TRACE) */
 
     res->super.super.taskpool_id = 1111;
-    res->super.super.nb_tasks = src->nb_local_tiles;
-    res->super.super.nb_pending_actions = 1;  /* for all local tasks */
+    res->super.super.tdm.counters.nb_tasks = src->nb_local_tiles;
+    res->super.super.tdm.counters.nb_pending_actions = 1;  /* for all local tasks */
     res->super.super.startup_hook = parsec_map_operator_startup_fn;
     res->super.super.destructor = (parsec_destruct_fn_t) parsec_map_operator_destructor;
     res->super.super.nb_task_classes = 1;

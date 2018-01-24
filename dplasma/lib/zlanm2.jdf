@@ -280,7 +280,7 @@ BODY
         printlog("DAG[%d] ZLANM2[%d] I'm done, and I remove %d tasks\n",
                  es->virtual_process->parsec_context->my_rank,
                  i, nbtasks );
-        (void)parsec_atomic_fetch_sub_int32( &this_task->taskpool->nb_tasks, nbtasks );
+        this_task->taskpool->tdm.module->taskpool_addto_nb_tasks(this_task->taskpool, -1);
 
         if (NULL != iter) {
             *iter = i;

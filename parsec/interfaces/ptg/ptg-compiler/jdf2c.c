@@ -27,6 +27,8 @@
 #include "jdf2c.h"
 #include "parsec/profiling.h"
 
+#define TERMDET_XP_IDLE_ON_NBTASKS
+
 extern const char *yyfilename;
 
 static FILE *cfile;
@@ -1294,12 +1296,13 @@ static void jdf_generate_structure(jdf_t *jdf)
             "struct __parsec_%s_internal_taskpool_s {\n"
             " parsec_%s_taskpool_t super;\n"
             " volatile int32_t sync_point;\n"
+            " volatile int32_t  initial_number_tasks;\n"
             " parsec_task_t* startup_queue;\n",
             jdf_basename, jdf_basename, jdf_basename);
 
     coutput("  /* The ranges to compute the hash key */\n");
     for(f = jdf->functions; f != NULL; f = f->next) {
-        if( f->user_defines & JDF_FUNCTION_HAS_UD_HASH_STRUCT )
+        if( f->user_defines & JDF_FUNCTION_HAS_UD_MAKE_KEY_FN )
             continue;
         for(pl = f->parameters; pl != NULL; pl = pl->next) {
             coutput("  int %s_%s_range;\n", f->fname, pl->name);
@@ -2539,52 +2542,16 @@ void free_l2p( jdf_l2p_t* l2p )
 
 static  void jdf_generate_deps_key_functions(const jdf_t *jdf, const jdf_function_entry_t *f, const char *sname)
 {
-    jdf_name_list_t *nl;
-
     (void)jdf;
-    
-    if( f->parameters == NULL ) {
-        /* There are no parameters for this task class */
-        coutput("static char *%s_key_print(char *buffer, size_t buffer_size, parsec_key_t k, void *user_data)\n"
-                "{\n"
-                "  (void)user_data;\n"
-                "  snprintf(buffer, buffer_size, \"()\");\n"
-                "  return buffer;\n"
-                "}\n"
-                "\n",
-                sname);
-    } else {
-        string_arena_t *sa_format = string_arena_new(64);
-        string_arena_t *sa_params = string_arena_new(64);
-        coutput("static char *%s_key_print(char *buffer, size_t buffer_size, parsec_key_t __parsec_key_, void *user_data)\n"
-                "{\n"
-                "  uint64_t __parsec_key = (uint64_t)(uintptr_t)__parsec_key_;\n"
-                "  __parsec_%s_internal_taskpool_t *__parsec_tp = (__parsec_%s_internal_taskpool_t *)user_data;\n",
-                sname,
-                jdf_basename, jdf_basename);
-        for(nl = f->parameters; NULL != nl; nl = nl->next) {
-            coutput("  int %s = (__parsec_key) %% __parsec_tp->%s_%s_range;\n"
-                    "  __parsec_key = __parsec_key / __parsec_tp->%s_%s_range;\n",
-                    nl->name, f->fname, nl->name,
-                    f->fname, nl->name);
-            string_arena_add_string(sa_format, "%%d%s", nl->next == NULL ? "" : ", ");
-            string_arena_add_string(sa_params, "%s%s", nl->name, nl->next == NULL ? "" : ", ");
-        }
-        coutput("  snprintf(buffer, buffer_size, \"%s(%s)\", %s);\n"
-                "  return buffer;\n"
-                "}\n"
-                "\n", f->fname, string_arena_get_string(sa_format), string_arena_get_string(sa_params));
-        string_arena_free(sa_format);
-        string_arena_free(sa_params);
-    }
-    
+    (void)f;
+    /* We rely on the generic functions, because we did not keep enough information
+     *  -- eg min values -- to do anything better, including in the print call */
     coutput("static parsec_key_fn_t %s = {\n"
             "   .key_equal = parsec_hash_table_generic_64bits_key_equal,\n"
-            "   .key_print = %s_key_print,\n"
+            "   .key_print = parsec_hash_table_generic_64bits_key_print,\n"
             "   .key_hash  = parsec_hash_table_generic_64bits_key_hash\n"
             "};\n"
-            "\n",
-            sname, sname);
+            "\n", sname);
 }
 
 static void jdf_generate_internal_init(const jdf_t *jdf, const jdf_function_entry_t *f, const char *fname)
@@ -2603,9 +2570,18 @@ static void jdf_generate_internal_init(const jdf_t *jdf, const jdf_function_entr
     sa2 = string_arena_new(64);
     sa_end = string_arena_new(64);
 
-    need_min_max = (0 == (f->user_defines & JDF_FUNCTION_HAS_UD_DEPENDENCIES_FUNS ) ||
-                    0 == (f->user_defines & JDF_FUNCTION_HAS_UD_HASH_STRUCT ));
-    need_to_count_tasks = (NULL == jdf_property_get_string(jdf->global_properties, JDF_PROP_UD_NB_LOCAL_TASKS_FN_NAME, NULL));
+    /* We need to compute the range if
+     *  - we use index arrays for dependency management and the user has not defined dependency lookup functions
+     *  - or the user has not defined a make_key function */
+    need_min_max = (((0 == (f->user_defines & JDF_FUNCTION_HAS_UD_DEPENDENCIES_FUNS)) &&
+                     (DEP_MANAGEMENT_INDEX_ARRAY == JDF_COMPILER_GLOBAL_ARGS.dep_management)) ||
+                    (0 == (f->user_defines & JDF_FUNCTION_HAS_UD_MAKE_KEY_FN)));
+    /* We need to count the number of tasks if
+     *  - the user has not provided a function that provides the number of local tasks
+     *  - and this is not a JDF with dynamic termination detection */
+    need_to_count_tasks = (NULL == jdf_property_get_string(jdf->global_properties, JDF_PROP_UD_NB_LOCAL_TASKS_FN_NAME, NULL)) &&
+        (NULL == jdf_property_get_string(jdf->global_properties, JDF_PROP_DYNAMIC_JDF, NULL));
+    /* We need to iterate on the execution space if we need to compute the range or if we need to count the tasks */
     need_to_iterate = need_min_max || need_to_count_tasks;
 
     if( JDF_COMPILER_GLOBAL_ARGS.dep_management == DEP_MANAGEMENT_DYNAMIC_HASH_TABLE &&
@@ -2787,14 +2763,14 @@ static void jdf_generate_internal_init(const jdf_t *jdf, const jdf_function_entr
         }
         if(need_to_count_tasks) {
             coutput("%s   if( 0 != nb_tasks ) {\n"
-                    "%s     (void)parsec_atomic_fetch_add_int32(&__parsec_tp->super.super.nb_tasks, nb_tasks);\n"
+                    "%s     (void)parsec_atomic_fetch_add_int32(&__parsec_tp->initial_number_tasks, nb_tasks);\n"
                     "%s   }\n",
                     indent(nesting),
                     indent(nesting),
                     indent(nesting));
         }
         if( need_to_iterate ) {
-            if( ! (f->user_defines & JDF_FUNCTION_HAS_UD_HASH_STRUCT) ) {
+            if( ! (f->user_defines & JDF_FUNCTION_HAS_UD_MAKE_KEY_FN) ) {
                 coutput("  /* Set the range variables for the collision-free hash-computation */\n");
                 for(l2p_item = l2p; NULL != l2p_item; l2p_item = l2p_item->next) {
                     dl = l2p_item->dl;
@@ -2871,31 +2847,36 @@ static void jdf_generate_internal_init(const jdf_t *jdf, const jdf_function_entr
      * when everything is completed.
      */
     coutput("  if(1 == parsec_atomic_fetch_dec_int32(&__parsec_tp->sync_point)) {\n"
-            "    /* Ready to rock. Update the count of expected tasks */\n"
-            "    int32_t nb_tasks;\n");
+            "    /* Ready to rock. Update the count of expected tasks */\n");
     if(!need_to_count_tasks) {
-        /* We only need to update the number of tasks according to the user provided count */
-        coutput("    __parsec_tp->super.super.nb_tasks = nb_tasks = %s(__parsec_tp);\n",
-                jdf_property_get_string(jdf->global_properties, JDF_PROP_UD_NB_LOCAL_TASKS_FN_NAME, NULL));
+        if( NULL != jdf_property_get_string(jdf->global_properties, JDF_PROP_UD_NB_LOCAL_TASKS_FN_NAME, NULL) ) {
+            coutput("    __parsec_tp->super.super.tdm.module->taskpool_set_nb_tasks(&__parsec_tp->super.super, %s(__parsec_tp));\n",
+                    jdf_property_get_string(jdf->global_properties, JDF_PROP_UD_NB_LOCAL_TASKS_FN_NAME, NULL));
+        } else {
+            assert(NULL != jdf_property_get_string(jdf->global_properties, JDF_PROP_DYNAMIC_JDF, NULL));
+            /* The startup tasks are going to count the real number of tasks as they discover them.
+             * For now, we lock the idleness by creating a runtime pending action, and
+             * we use sync_point to find when all the startup tasks are done. */
+            coutput("    __parsec_tp->sync_point = PARSEC_%s_NB_TASK_CLASSES\n;"
+#ifdef TERMDET_XP_IDLE_ON_NBTASKS
+                    "    __parsec_tp->super.super.tdm.module->taskpool_set_nb_tasks(&__parsec_tp->super.super, 1);\n",
+#else
+                    "    __parsec_tp->super.super.tdm.module->taskpool_addto_nb_pa(&__parsec_tp->super.super, 1);\n"
+                    "    __parsec_tp->super.super.tdm.module->taskpool_set_nb_tasks(&__parsec_tp->super.super, 0);\n",
+#endif
+                    jdf_basename);
+        }
     } else {
-        coutput("  nb_tasks = parsec_atomic_fetch_dec_int32(&__parsec_tp->super.super.nb_tasks);\n");
-        /* TODO coutput("    __parsec_tp->super.super.nb_tasks = __parsec_tp->super.super.initial_number_tasks;\n"); */
+        coutput("    __parsec_tp->super.super.tdm.module->taskpool_set_nb_tasks(&__parsec_tp->super.super, __parsec_tp->initial_number_tasks);\n");
     }
     coutput("    parsec_mfence();\n"
-            "    if( 1 == nb_tasks ) {\n"
-            "      /* No local tasks, so the taskpool shoud be marked as complete. As we are still in one\n"
-            "       * of the initialization tasks, there are still runtime tasks to be completed so we can\n"
-            "       * simply decrease the number of runtime tasks without checking the entire state of the\n"
-            "       * taskpool (state that will be checked as soon as we release this task. */\n"
-            "       (void)parsec_ptg_update_runtime_task(&__parsec_tp->super.super, -1);\n"
-            "    } else\n"
-            "      parsec_taskpool_enable((parsec_taskpool_t*)__parsec_tp, &__parsec_tp->startup_queue,\n"
-            "                             (parsec_task_t*)this_task, es, __parsec_tp->super.super.nb_pending_actions);\n"
+            "    __parsec_tp->super.super.tdm.module->taskpool_ready(&__parsec_tp->super.super);\n"
+            "    parsec_taskpool_enable((parsec_taskpool_t*)__parsec_tp, &__parsec_tp->startup_queue,\n"
+            "                           (parsec_task_t*)this_task, es, __parsec_tp->super.super.tdm.counters.nb_pending_actions);\n"
             "    return PARSEC_HOOK_RETURN_DONE;\n"
-            "  }\n");
-
-    coutput("  return (PARSEC_TASK_STATUS_COMPLETE == this_task->status) ? PARSEC_HOOK_RETURN_DONE : PARSEC_HOOK_RETURN_ASYNC;\n");
-    coutput("}\n\n");
+            "  }\n"
+            "  return (PARSEC_TASK_STATUS_COMPLETE == this_task->status) ? PARSEC_HOOK_RETURN_DONE : PARSEC_HOOK_RETURN_ASYNC;\n"
+            "}\n\n");
 
     string_arena_free(sa_end);
     free_l2p(l2p);
@@ -3003,13 +2984,18 @@ static void jdf_generate_release_task_fct(const jdf_t *jdf, jdf_function_entry_t
     if( !(f->user_defines & JDF_FUNCTION_HAS_UD_DEPENDENCIES_FUNS) ) {
         coutput("    parsec_hash_table_t *ht = (parsec_hash_table_t*)__parsec_tp->super.super.dependencies_array[%d];\n"
                 "    parsec_key_t key = this_task->task_class->make_key((const parsec_taskpool_t*)__parsec_tp, (const assignment_t*)&this_task->locals);\n"
-                "    parsec_hashable_dependency_t *hash_dep = (parsec_hashable_dependency_t *)parsec_hash_table_remove(ht, key);\n"
-                "    parsec_thread_mempool_free(hash_dep->mempool_owner, hash_dep);\n",
+                "    parsec_hashable_dependency_t *hash_dep = (parsec_hashable_dependency_t *)parsec_hash_table_remove(ht, key);\n",
                 f->task_class_id);
+        if( f->user_defines & JDF_FUNCTION_HAS_UD_STARTUP_TASKS_FUN ) {
+            coutput("    /* Must test for NULL, as user-provided startup tasks may not have a dep in the hash table */\n"
+                    "    if(NULL != hash_dep) parsec_thread_mempool_free(hash_dep->mempool_owner, hash_dep);\n");
+        } else {
+            coutput("    parsec_thread_mempool_free(hash_dep->mempool_owner, hash_dep);\n");
+        }
     }
     if( NULL != jdf_property_get_string(jdf->global_properties, JDF_PROP_UD_NB_LOCAL_TASKS_FN_NAME, NULL) ) {
-        coutput("    if( (PARSEC_UNDETERMINED_NB_TASKS == __parsec_tp->super.super.nb_tasks) ||\n"
-                "        (0 == __parsec_tp->super.super.nb_tasks) ) {\n"
+        coutput("    if( PARSEC_UNDETERMINED_NB_TASKS == __parsec_tp->super.super.tdm.counters.nb_tasks ||\n"
+                "        0 == __parsec_tp->super.super.tdm.counters.nb_tasks ) {\n"
                 "        /* don't spend time counting */\n"
                 "        return parsec_release_task_to_mempool(es, this_task);\n"
                 "    }\n");
@@ -3213,6 +3199,20 @@ static void jdf_generate_one_function( const jdf_t *jdf, jdf_function_entry_t *f
     }
     string_arena_add_string(sa, "  .find_deps = %s,\n", jdf_property_get_string(f->properties, JDF_PROP_UD_FIND_DEPS_FN_NAME, NULL));
 
+    if( use_mask ) {
+        if( NULL == jdf_property_get_string(jdf->global_properties, JDF_PROP_DYNAMIC_JDF, NULL)) {
+            string_arena_add_string(sa, "  .update_deps = parsec_update_deps_with_mask,\n");
+        } else {
+            string_arena_add_string(sa, "  .update_deps = parsec_update_deps_with_mask_count_task,\n");
+        }
+    } else {
+        if( NULL == jdf_property_get_string(jdf->global_properties, JDF_PROP_DYNAMIC_JDF, NULL)) {
+            string_arena_add_string(sa, "  .update_deps = parsec_update_deps_with_counter,\n");
+        } else {
+            string_arena_add_string(sa, "  .update_deps = parsec_update_deps_with_counter_count_task,\n");
+        }
+    }
+    
     if( !(f->flags & JDF_FUNCTION_FLAG_NO_SUCCESSORS) ) {
         sprintf(prefix, "iterate_successors_of_%s_%s", jdf_basename, f->fname);
         jdf_generate_code_iterate_successors_or_predecessors(jdf, f, prefix, JDF_DEP_FLOW_OUT);
@@ -3235,8 +3235,8 @@ static void jdf_generate_one_function( const jdf_t *jdf, jdf_function_entry_t *f
 
     sprintf(prefix, "data_lookup_of_%s_%s", jdf_basename, f->fname);
     jdf_generate_code_data_lookup(jdf, f, prefix);
-    string_arena_add_string(sa, "  .prepare_input = (parsec_hook_t*)%s,\n", prefix);
     string_arena_add_string(sa, "  .prepare_output = (parsec_hook_t*)%s,\n", "NULL");
+    string_arena_add_string(sa, "  .prepare_input = (parsec_hook_t*)%s,\n", prefix);
     sprintf(prefix, "datatype_lookup_of_%s_%s", jdf_basename, f->fname);
     jdf_generate_code_datatype_lookup(jdf, f, prefix);
     string_arena_add_string(sa, "  .get_datatype = (parsec_datatype_lookup_t*)%s,\n", prefix);
@@ -3549,6 +3549,24 @@ static void jdf_generate_constructor( const jdf_t* jdf )
             UTIL_DUMP_LIST_FIELD( sa1, jdf->globals, next, name,
                                   dump_string, NULL, "", "#undef ", "\n", "\n"));
 
+    if( NULL != jdf_property_get_string(jdf->global_properties, JDF_PROP_DYNAMIC_JDF, NULL) ) {
+        coutput("static parsec_hook_return_t tp_ready_when_synced(struct parsec_execution_stream_s *es, parsec_task_t *task) {\n"
+                "  (void)es;\n"
+                "  __parsec_%s_internal_taskpool_t *__parsec_tp = (__parsec_%s_internal_taskpool_t *)task->taskpool;\n"
+                "  int remaining = parsec_atomic_fetch_dec_int32(&__parsec_tp->sync_point) - 1;\n"
+                "  if( 0 == remaining ) {\n"
+#ifdef TERMDET_XP_IDLE_ON_NBTASKS
+                "    __parsec_tp->super.super.tdm.module->taskpool_addto_nb_tasks(&__parsec_tp->super.super, __parsec_tp->initial_number_tasks-1);\n"
+#else
+                "    __parsec_tp->super.super.tdm.module->taskpool_addto_nb_tasks(&__parsec_tp->super.super, __parsec_tp->initial_number_tasks);\n"
+                "    __parsec_tp->super.super.tdm.module->taskpool_addto_nb_pa(&__parsec_tp->super.super, -1);\n"
+#endif
+                "  }\n"
+                "  return PARSEC_HOOK_RETURN_DONE;\n"
+                "}\n\n", jdf_basename, jdf_basename);          
+    }
+
+    
     {
         typed_globals_info_t prop = { sa2, NULL, "hidden", .prefix = "" };
         coutput("parsec_%s_taskpool_t *parsec_%s_new(%s)\n{\n",
@@ -3571,19 +3589,22 @@ static void jdf_generate_constructor( const jdf_t* jdf )
 
     coutput("  __parsec_tp->super.super.nb_task_classes = PARSEC_%s_NB_TASK_CLASSES;\n"
             "  __parsec_tp->super.super.devices_mask = PARSEC_DEVICES_ALL;\n"
+            "  parsec_termdet_open_dyn_module(&__parsec_tp->super.super);\n"
+            "  __parsec_tp->super.super.tdm.module->monitor_taskpool(&__parsec_tp->super.super,\n"
+            "                                                        parsec_taskpool_termination_detected);\n"
             "  __parsec_tp->super.super.update_nb_runtime_task = parsec_ptg_update_runtime_task;\n"
             "  __parsec_tp->super.super.dependencies_array = (void **)\n"
             "              calloc(__parsec_tp->super.super.nb_task_classes, sizeof(void*));\n"
             "  /* Twice the size to hold the startup tasks function_t */\n"
             "  __parsec_tp->super.super.task_classes_array = (const parsec_task_class_t**)\n"
-            "              malloc(2 * __parsec_tp->super.super.nb_task_classes * sizeof(parsec_task_class_t*));\n"
-            "  __parsec_tp->super.super.nb_tasks = 1;\n"
+            "              calloc((2 * PARSEC_%s_NB_TASK_CLASSES + 1), sizeof(parsec_task_class_t*));\n"
+            "  __parsec_tp->super.super.tdm.module->taskpool_set_nb_tasks(&__parsec_tp->super.super, 1);\n"
+            "  __parsec_tp->super.super.tdm.module->taskpool_set_nb_pa(&__parsec_tp->super.super, PARSEC_%s_NB_TASK_CLASSES);  /* for the startup tasks */\n"
             "  __parsec_tp->super.super.taskpool_type = PARSEC_TASKPOOL_TYPE_PTG;\n"
-            "  __parsec_tp->super.super.nb_pending_actions = 1 + __parsec_tp->super.super.nb_task_classes;  /* for the startup tasks */\n"
-            "  __parsec_tp->sync_point = __parsec_tp->super.super.nb_task_classes;\n"
-            "  __parsec_tp->startup_queue = NULL;\n"
-            "%s",
-            jdf_basename, string_arena_get_string(sa1));
+            "  __parsec_tp->sync_point = PARSEC_%s_NB_TASK_CLASSES;\n"
+            "  __parsec_tp->initial_number_tasks = 0;\n"
+            "  __parsec_tp->startup_queue = NULL;\n",
+            jdf_basename, jdf_basename, jdf_basename, jdf_basename);
     /* Prepare the functions */
     coutput("  for( i = 0; i < (int)__parsec_tp->super.super.nb_task_classes; i++ ) {\n"
             "    __parsec_tp->super.super.task_classes_array[i] = tc = malloc(sizeof(parsec_task_class_t));\n"
@@ -3618,6 +3639,10 @@ static void jdf_generate_constructor( const jdf_t* jdf )
         if( f->flags & JDF_FUNCTION_FLAG_CAN_BE_STARTUP ) {
             coutput("  ((__parsec_chore_t*)&tc->incarnations[0])->hook = (parsec_hook_t *)%s;\n",
                     jdf_property_get_string(f->properties, JDF_PROP_UD_STARTUP_TASKS_FN_NAME, NULL));
+        }
+        if( NULL != jdf_property_get_string(jdf->global_properties, JDF_PROP_DYNAMIC_JDF, NULL) ) {
+            coutput("  assert(NULL == tc->complete_execution);\n"
+                    "  tc->complete_execution = (parsec_hook_t*)tp_ready_when_synced;\n");
         }
     }
 
@@ -3699,11 +3724,15 @@ static void jdf_generate_constructor( const jdf_t* jdf )
             "  (void)parsec_taskpool_reserve_id((parsec_taskpool_t*)__parsec_tp);\n",
             jdf_basename, jdf_basename);
 
+    if( NULL != jdf_property_get_string(jdf->global_properties, JDF_PROP_DYNAMIC_JDF, NULL) ) {
+        coutput("  __parsec_tp->initial_number_tasks = 0;\n");
+    }
+    
     string_arena_init(sa1);
     coutput("  /* Prevent warnings related to the not used hidden parameters */\n"
             "%s", UTIL_DUMP_LIST_FIELD(sa1, jdf->globals, next, name,
                                        dump_string, NULL, "", "  (void)", ";", ";\n"));
-
+    
     coutput("  return (parsec_%s_taskpool_t*)__parsec_tp;\n"
             "}\n\n",
             jdf_basename);
@@ -3721,12 +3750,9 @@ static jdf_name_list_t *definition_is_parameter(const jdf_function_entry_t *f, c
     return NULL;
 }
 
-static void jdf_generate_hashfunction_for(const jdf_t *jdf, const jdf_function_entry_t *f)
+static void jdf_generate_makekey_function_for(const jdf_t *jdf, const jdf_function_entry_t *f)
 {
-    string_arena_t *sa_format = string_arena_new(64);
-    string_arena_t *sa_params = string_arena_new(64);
     string_arena_t *sa_range_multiplier = string_arena_new(64);
-    jdf_name_list_t *nl;
     jdf_def_list_t *dl;
     expr_info_t info;
     int idx;
@@ -3786,62 +3812,26 @@ static void jdf_generate_hashfunction_for(const jdf_t *jdf, const jdf_function_e
                 "}\n");
     }
 
-    if( f->parameters == NULL ) {
-        /* There are no parameters for this task class */
-        coutput("static char *%s_%s_key_print(char *buffer, size_t buffer_size, parsec_key_t k, void *user_data)\n"
-                "{\n"
-                "  (void)user_data;\n"
-                "  snprintf(buffer, buffer_size, \"()\");\n"
-                "  return buffer;\n"
-                "}\n"
-                "\n",
-                jdf_basename, f->fname);
-    } else {
-        coutput("static char *%s_%s_key_print(char *buffer, size_t buffer_size, parsec_key_t __parsec_key_, void *user_data)\n"
-                "{\n"
-                "  const __parsec_%s_internal_taskpool_t *__parsec_tp = (const __parsec_%s_internal_taskpool_t *)user_data;\n"
-                "  uintptr_t __parsec_key = (uintptr_t)__parsec_key_;\n",
-                jdf_basename, f->fname,
-                jdf_basename, jdf_basename);
-        
-        for(nl = f->parameters; NULL != nl; nl = nl->next) {
-            coutput("  int %s = __parsec_key %% __parsec_tp->%s_%s_range;\n"
-                    "  __parsec_key /=  __parsec_tp->%s_%s_range;\n",
-                    nl->name, f->fname, nl->name,
-                    f->fname, nl->name);
-            string_arena_add_string(sa_format, "%%d%s", nl->next == NULL ? "" : ", ");
-            string_arena_add_string(sa_params, "%s%s", nl->name, nl->next == NULL ? "" : ", ");
-        }
-        coutput("  snprintf(buffer, buffer_size, \"%s(%s)\", %s);\n"
-                "  return buffer;\n"
-                "}\n"
-                "\n",
-                f->fname, string_arena_get_string(sa_format), string_arena_get_string(sa_params));
-        string_arena_free(sa_format);
-        string_arena_free(sa_params);
-    }
-
-    if( !(f->user_defines & JDF_FUNCTION_HAS_UD_HASH_STRUCT) ) {
-        coutput("static parsec_key_fn_t %s = {\n"
-                "   .key_equal = parsec_hash_table_generic_64bits_key_equal,\n"
-                "   .key_print = %s_%s_key_print,\n"
-                "   .key_hash  = parsec_hash_table_generic_64bits_key_hash\n"
-                "};\n"
-                "\n",
-                jdf_property_get_string(f->properties, JDF_PROP_UD_HASH_STRUCT_NAME, NULL),
-                jdf_basename, f->fname);
-    }
-
     string_arena_free(sa_range_multiplier);
 }
 
-static void jdf_generate_hashfunctions(const jdf_t *jdf)
+static void jdf_generate_makekey_and_hashstruct(const jdf_t *jdf)
 {
     jdf_function_entry_t *f;
 
     for(f = jdf->functions; f != NULL; f = f->next) {
-        if( ! (f->user_defines & JDF_FUNCTION_HAS_UD_HASH_STRUCT) ) {
-            jdf_generate_hashfunction_for(jdf, f);
+        if( ! (f->user_defines & JDF_FUNCTION_HAS_UD_MAKE_KEY_FN) ) {
+            jdf_generate_makekey_function_for(jdf, f);
+        }
+
+        if( !(f->user_defines & JDF_FUNCTION_HAS_UD_HASH_STRUCT) ) {
+            coutput("static parsec_key_fn_t %s = {\n"
+                    "   .key_equal = parsec_hash_table_generic_64bits_key_equal,\n"
+                    "   .key_print = parsec_hash_table_generic_64bits_key_print,\n"
+                    "   .key_hash  = parsec_hash_table_generic_64bits_key_hash\n"
+                    "};\n"
+                    "\n",
+                    jdf_property_get_string(f->properties, JDF_PROP_UD_HASH_STRUCT_NAME, NULL));
         }
     }
 }
@@ -6086,8 +6076,7 @@ static void jdf_check_user_defined_internals(jdf_t *jdf)
     int rc;
 
     for(f = jdf->functions; NULL != f; f = f->next) {
-        if( NULL == jdf_property_get_string(f->properties, JDF_PROP_UD_MAKE_KEY_FN_NAME, NULL) &&
-            NULL == jdf_property_get_string(f->properties, JDF_PROP_UD_HASH_STRUCT_NAME, NULL) ) {
+        if( NULL == jdf_property_get_string(f->properties, JDF_PROP_UD_MAKE_KEY_FN_NAME, NULL) ) {
             rc = asprintf(&tmp, JDF2C_NAMESPACE"make_key_%s", f->fname);
             if (rc == -1) {
                 jdf_fatal(JDF_OBJECT_LINENO(f->properties),
@@ -6096,6 +6085,12 @@ static void jdf_check_user_defined_internals(jdf_t *jdf)
             }
             (void)jdf_add_string_property(&f->properties, JDF_PROP_UD_MAKE_KEY_FN_NAME, tmp);
             free(tmp);
+            
+            f->user_defines &= ~JDF_FUNCTION_HAS_UD_MAKE_KEY_FN;
+        } else {
+            f->user_defines |= JDF_FUNCTION_HAS_UD_MAKE_KEY_FN;
+        }
+        if( NULL == jdf_property_get_string(f->properties, JDF_PROP_UD_HASH_STRUCT_NAME, NULL) ) {
             rc = asprintf(&tmp, JDF2C_NAMESPACE"key_fns_%s", f->fname);
             if (rc == -1) {
                 jdf_fatal(JDF_OBJECT_LINENO(f->properties),
@@ -6107,14 +6102,6 @@ static void jdf_check_user_defined_internals(jdf_t *jdf)
             
             f->user_defines &= ~JDF_FUNCTION_HAS_UD_HASH_STRUCT;
         } else {
-            if( NULL == jdf_property_get_string(f->properties, JDF_PROP_UD_MAKE_KEY_FN_NAME, NULL) ||
-                NULL == jdf_property_get_string(f->properties, JDF_PROP_UD_HASH_STRUCT_NAME, NULL) ) {
-                jdf_fatal(JDF_OBJECT_LINENO(f->properties),
-                          "Error in user-defined functions of task class %s:\n"
-                          "both make_key function and key_fns structure must be defined if one is\n",
-                          f->fname);
-                exit(1);
-            }
             f->user_defines |= JDF_FUNCTION_HAS_UD_HASH_STRUCT;
         }
 
@@ -6367,7 +6354,8 @@ int jdf2c(const char *output_c, const char *output_h, const char *_jdf_basename,
     }
 
     jdf_generate_structure(jdf);
-    jdf_generate_hashfunctions(jdf);
+    jdf_generate_inline_c_functions(jdf);
+    jdf_generate_makekey_and_hashstruct(jdf);
     jdf_generate_priority_prototypes(jdf);
     jdf_generate_functions_statics(jdf); // PETER generates startup tasks
     jdf_generate_startup_hook(jdf);
