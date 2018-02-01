@@ -30,6 +30,7 @@ install(FILES
   dplasma_complex.h
   dplasma_qr_param.h
   dplasmatypes.h
+  dplasma_bcast.h
   DESTINATION ${DPLASMA_INSTALL_PREFIX}/include)
 
 
