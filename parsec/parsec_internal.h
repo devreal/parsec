@@ -112,7 +112,7 @@ struct parsec_taskpool_s {
                                                      */
     parsec_context_t*           context;   /**< The PaRSEC context on which this taskpool was enqueued */
     parsec_startup_fn_t         startup_hook;  /**< Pointer to the function that generates initial tasks */
-    const parsec_task_class_t** task_classes_array; /**< Array of task classes that build this DAG */
+    parsec_task_class_t**       task_classes_array; /**< Array of task classes that build this DAG */
 #if defined(PARSEC_PROF_TRACE)
     const int*                   profiling_array; /**< Array of profiling keys to start/stop each of the task classes
                                                    *   The array is indexed on the same index as task_classes_array */

@@ -3575,7 +3575,7 @@ static void jdf_generate_constructor( const jdf_t* jdf )
             "  __parsec_tp->super.super.dependencies_array = (void **)\n"
             "              calloc(__parsec_tp->super.super.nb_task_classes, sizeof(void*));\n"
             "  /* Twice the size to hold the startup tasks function_t */\n"
-            "  __parsec_tp->super.super.task_classes_array = (const parsec_task_class_t**)\n"
+            "  __parsec_tp->super.super.task_classes_array = (parsec_task_class_t**)\n"
             "              malloc(2 * __parsec_tp->super.super.nb_task_classes * sizeof(parsec_task_class_t*));\n"
             "  __parsec_tp->super.super.nb_tasks = 1;\n"
             "  __parsec_tp->super.super.taskpool_type = PARSEC_TASKPOOL_TYPE_PTG;\n"

@@ -175,8 +175,8 @@ remote_dep_cmd_to_string(remote_dep_wire_activate_t* origin,
     task.taskpool = parsec_taskpool_lookup( origin->taskpool_id );
     if( NULL == task.taskpool ) {
         snprintf(str, len, "UNKNOWN TASKPOOL_%d", origin->taskpool_id);
-    } else if( task.taskpool->task_classes_length > origin->task_class_id ) {
-        snprintf(str, len, "Unknown task class id %d (locally known %d)\n", origin->task_class_id, task.taskpool->task_classes_length);
+    } else if( task.taskpool->nb_task_classes > origin->task_class_id ) {
+        snprintf(str, len, "Unknown task class id %d (locally known %d)\n", origin->task_class_id, task.taskpool->nb_task_classes);
     } else {
         task.task_class   = task.taskpool->task_classes_array[origin->task_class_id];
         if( NULL == task.task_class ) {
@@ -584,7 +584,7 @@ remote_dep_get_datatypes(parsec_execution_stream_t* es,
 
     task.priority = 0;  /* unknown yet */
     task.taskpool = origin->taskpool;
-    assert(task.taskpool->task_classes_length > origin->msg.task_class_id);
+    assert(task.taskpool->nb_task_classes > origin->msg.task_class_id);
     task.task_class = task.taskpool->task_classes_array[origin->msg.task_class_id];
 
     if( PARSEC_TASKPOOL_TYPE_DTD == origin->taskpool->taskpool_type ) {
@@ -688,7 +688,7 @@ remote_dep_release_incoming(parsec_execution_stream_t* es,
     origin->incoming_mask ^= complete_mask;
 
     task.taskpool = origin->taskpool;
-    assert(task.taskpool->task_classes_length > origin->msg.task_class_id);
+    assert(task.taskpool->nb_task_classes > origin->msg.task_class_id);
     task.task_class = task.taskpool->task_classes_array[origin->msg.task_class_id];
     task.priority = origin->priority;
     for(i = 0; i < task.task_class->nb_locals;

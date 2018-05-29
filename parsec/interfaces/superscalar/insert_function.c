@@ -237,8 +237,11 @@ void parsec_dtd_taskpool_constructor(parsec_dtd_taskpool_t *tp)
 
     tp->super.startup_hook    = parsec_dtd_startup;
     tp->super.destructor      = (parsec_destruct_fn_t)parsec_dtd_taskpool_destruct;
+    tp->super.task_classes_array = (const parsec_task_class_t **) malloc( PARSEC_DTD_NB_TASK_CLASSES * sizeof(parsec_task_class_t *));
 
-    tp->super.task_classes_length = 0;  /* No need for allocation */
+    for( int i = 0; i < PARSEC_DTD_NB_TASK_CLASSES; i++ ) {
+        tp->super.task_classes_array[i] = NULL;
+    }
 
     tp->super.dependencies_array  = calloc(PARSEC_DTD_NB_TASK_CLASSES, sizeof(parsec_dependencies_t *));
 
@@ -273,8 +276,6 @@ parsec_dtd_taskpool_destructor(parsec_dtd_taskpool_t *tp)
 #endif /* defined(PARSEC_PROF_TRACE) */
 
     free(tp->super.task_classes_array);
-    tp->super.task_classes_array  = NULL;
-    tp->super.task_classes_length = 0;
 
     /* Destroy the data repositories for this object */
     for (i = 0; i < PARSEC_DTD_NB_TASK_CLASSES; i++) {
@@ -1222,8 +1223,11 @@ parsec_dtd_taskpool_new(void)
         __tp->startup_list[i] = NULL;
     }
 
-    __tp->super.task_classes_length = 0;
-    __tp->super.task_classes_array = NULL;
+    /* Keeping track of total tasks to be executed per taskpool for the window */
+    for(i = 0; i < PARSEC_DTD_NB_TASK_CLASSES; i++) {
+        __tp->flow_set_flag[i]  = 0;
+        __tp->super.task_classes_array[i] = NULL;
+    }
 
     __tp->wait_func           = parsec_dtd_taskpool_wait_func;
     __tp->task_id             = 0;
@@ -1278,9 +1282,9 @@ parsec_dtd_taskpool_release( parsec_taskpool_t *tp )
 {
     if( 2 == parsec_atomic_fetch_dec_int32( &tp->super.super.obj_reference_count ) ) {
         parsec_dtd_taskpool_t *dtd_tp = (parsec_dtd_taskpool_t *)tp;
-        uint32_t i;
+        int i;
 
-        for(i = 0; i < dtd_tp->super.task_classes_length; i++) {
+        for(i = 0; i < PARSEC_DTD_NB_TASK_CLASSES; i++) {
             const parsec_task_class_t *tc = dtd_tp->super.task_classes_array[i];
             parsec_dtd_task_class_t   *dtd_tc = (parsec_dtd_task_class_t *)tc;
 
@@ -2228,7 +2232,9 @@ parsec_dtd_create_task_class( parsec_dtd_taskpool_t *__tp, parsec_dtd_funcptr_t*
     /* Inserting Function structure in the hash table to keep track for each class of task */
     uint64_t fkey = (uint64_t)(uintptr_t)fpointer + tc->nb_flows;
     parsec_dtd_insert_task_class( __tp, fkey, dtd_tc );
-    parsec_taskpool_add_task_class(&__tp->super, tc);
+    assert( NULL == __tp->super.task_classes_array[tc->task_class_id] );
+    __tp->super.task_classes_array[tc->task_class_id]     = (parsec_task_class_t *)tc;
+    __tp->super.task_classes_array[tc->task_class_id + 1] = NULL;
 
     return tc;
 }
@@ -2673,7 +2679,7 @@ parsec_insert_dtd_task(parsec_task_t *__this_task)
         tile_op_type = (FLOW_OF(this_task, flow_index))->op_type;
         put_in_chain = 1;
 
-        if(0 == ((parsec_dtd_task_class_t*)tc)->flow_set_flag) {
+        if(0 == dtd_tp->flow_set_flag[tc->task_class_id]) {
             /* Setting flow in function structure */
             parsec_dtd_set_flow_in_function(dtd_tp, this_task, tile_op_type, flow_index);
         }
@@ -2922,7 +2928,7 @@ parsec_insert_dtd_task(parsec_task_t *__this_task)
         }
     }
 
-    ((parsec_dtd_task_class_t*)tc)->flow_set_flag = 1;
+    dtd_tp->flow_set_flag[tc->task_class_id] = 1;
 
     if( parsec_dtd_task_is_local(this_task) ) {/* Task is local */
         (void)parsec_atomic_fetch_inc_int32(&dtd_tp->super.nb_tasks);
