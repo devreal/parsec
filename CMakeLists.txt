@@ -943,6 +943,9 @@ install(FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/parsec/mca/pins/pins.h
   DESTINATION include/parsec/mca/pins)
 install(FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/parsec/mca/termdet/termdet.h
+  DESTINATION include/parsec/mca/termdet)
+install(FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/parsec/mca/mca.h
   DESTINATION include/parsec/mca)
 install(FILES

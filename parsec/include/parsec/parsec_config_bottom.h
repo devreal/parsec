@@ -31,6 +31,9 @@
 #if defined(c_plusplus) || defined(__cplusplus)
 # define BEGIN_C_DECLS extern "C" {
 # define END_C_DECLS }
+/* Some C++ compilers do not parse the restrict keyword, even inside a extern "C" block.
+ * e.g. g++ (GCC) 7.1.0. restrict is not defined in C++. */
+# define restrict
 #else
 #define BEGIN_C_DECLS          /* empty */
 #define END_C_DECLS            /* empty */

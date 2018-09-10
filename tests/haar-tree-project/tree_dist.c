@@ -131,12 +131,28 @@ static parsec_data_key_t tree_dist_data_key(parsec_data_collection_t *desc, ...)
     return nid;
 }
 
+static uint32_t tree_dist(int n, int l, int nodes)
+{
+    int pn, pl;
+    if( (1<<n) < nodes ) {
+        return (n + 741*l) % nodes;
+    }
+    pn = n;
+    pl = l;
+    while( (pn % 5) != 0 ) {
+        pn = pn-1;
+        pl = pl/2;
+    }
+    return pl % nodes;
+}
+
 static uint32_t tree_dist_rank_of_key(parsec_data_collection_t *desc, parsec_data_key_t k)
 {
     tree_dist_t *tree = (tree_dist_t*)desc;
+    int n, l;
     assert(k < tree->allocated_nodes);
     assert(NULL != tree->nodes[k]);
-    return tree->nodes[k]->n % tree->super.nodes;
+    return tree_dist(tree->nodes[k]->n, tree->nodes[k]->l, tree->super.nodes);
 }
 
 static uint32_t tree_dist_rank_of(parsec_data_collection_t *desc, ...)
@@ -144,12 +160,12 @@ static uint32_t tree_dist_rank_of(parsec_data_collection_t *desc, ...)
     tree_dist_t *tree = (tree_dist_t*)desc;
     va_list ap;
     int n, l;
+    int pn, pl;
     va_start(ap, desc);
     n = va_arg(ap, int);
     l = va_arg(ap, int);
     va_end(ap);
-    (void)l;
-    return n % tree->super.nodes;
+    return tree_dist(n, l, tree->super.nodes);
 }
 
 static parsec_data_t* tree_dist_data_of_key(parsec_data_collection_t *desc, parsec_data_key_t key)
