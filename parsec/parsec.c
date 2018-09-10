@@ -1727,7 +1727,7 @@ parsec_taskpool_t* parsec_taskpool_lookup( uint32_t taskpool_id )
 {
     parsec_taskpool_t *r = NOTASKPOOL;
     parsec_atomic_lock( &taskpool_array_lock );
-    if( taskpool_id <= taskpool_array_pos ) {
+    if( taskpool_array != NULL && taskpool_id <= taskpool_array_pos ) {
         r = taskpool_array[taskpool_id];
     }
     parsec_atomic_unlock( &taskpool_array_lock );
@@ -1744,7 +1744,7 @@ int parsec_taskpool_reserve_id( parsec_taskpool_t* tp )
     parsec_atomic_lock( &taskpool_array_lock );
     idx = (uint32_t)++taskpool_array_pos;
 
-    if( (NULL == taskpool_array) || (idx >= taskpool_array_size) ) {
+    while( (NULL == taskpool_array) || (idx >= taskpool_array_size) ) {
         taskpool_array_size <<= 1;
         taskpool_array = (parsec_taskpool_t**)realloc(taskpool_array, taskpool_array_size * sizeof(parsec_taskpool_t*) );
         /* NULLify all the new elements */
@@ -1765,7 +1765,7 @@ int parsec_taskpool_register( parsec_taskpool_t* tp )
     uint32_t idx = tp->taskpool_id;
 
     parsec_atomic_lock( &taskpool_array_lock );
-    if( (NULL == taskpool_array) || (idx >= taskpool_array_size) ) {
+    while( (NULL == taskpool_array) || (idx >= taskpool_array_size) ) {
         taskpool_array_size <<= 1;
         taskpool_array = (parsec_taskpool_t**)realloc(taskpool_array, taskpool_array_size * sizeof(parsec_taskpool_t*) );
         /* NULLify all the new elements */

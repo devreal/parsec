@@ -23,6 +23,11 @@
 typedef struct dep_cmd_item_s dep_cmd_item_t;
 typedef union dep_cmd_u dep_cmd_t;
 
+typedef struct parsec_ttg_header_s {
+    uint32_t taskpool_id;
+    uint32_t data_size;
+} parsec_ttg_header_t;
+
 static int remote_dep_mpi_init(parsec_context_t* context);
 static int remote_dep_mpi_fini(parsec_context_t* context);
 static int remote_dep_mpi_on(parsec_context_t* context);
@@ -35,6 +40,8 @@ remote_dep_release_incoming(parsec_execution_stream_t* es,
 
 static int remote_dep_nothread_send(parsec_execution_stream_t* es,
                                     dep_cmd_item_t **head_item);
+static int remote_dep_nothread_send_ttg(parsec_execution_stream_t* es,
+                                        dep_cmd_item_t *item);
 static int remote_dep_nothread_memcpy(parsec_execution_stream_t* es,
                                       dep_cmd_item_t *item);
 
@@ -69,6 +76,8 @@ static int remote_dep_dequeue_nothread_progress(parsec_context_t* context, int c
 
 #include "parsec/class/dequeue.h"
 
+static MPI_Comm dep_comm;
+
 /**
  * Number of data movements to be extracted at each step. Bigger the number
  * larger the amount spent in ordering the tasks, but greater the potential
@@ -82,12 +91,17 @@ static int parsec_param_enable_aggregate = 1;
 static int DEP_NB_REQ;
 
 static int parsec_comm_activations_max = 2*DEP_NB_CONCURENT;
+static int parsec_comm_ttg_max         = 2*DEP_NB_CONCURENT;
 static int parsec_comm_data_get_max    = 2*DEP_NB_CONCURENT;
 static int parsec_comm_gets_max        = DEP_NB_CONCURENT * MAX_PARAM_COUNT;
 static int parsec_comm_gets            = 0;
 static int parsec_comm_puts_max        = DEP_NB_CONCURENT * MAX_PARAM_COUNT;
 static int parsec_comm_puts            = 0;
 static int parsec_comm_last_active_req = 0;
+
+static MPI_Datatype parsec_ttg_header_dtt;
+
+#define DEP_TTG_MAX_BUFFER_SIZE (1024*1024)
 
 /**
  * The order is important as it will be used to compute the index in the
@@ -103,6 +117,7 @@ typedef enum dep_cmd_action_t {
     DEP_PUT_DATA, */
     DEP_GET_DATA,
     DEP_CTL,
+    DEP_TTG_SEND_MSG,
     DEP_LAST  /* always the last element. it shoud not be used */
 } dep_cmd_action_t;
 
@@ -129,6 +144,11 @@ union dep_cmd_u {
         int64_t               displ_r;
         int                   count;
     } memcpy;
+    struct {
+        int rank;
+        char *packed;
+        int   position;
+    } ttg;
 };
 
 struct dep_cmd_item_s {
@@ -156,6 +176,8 @@ static void remote_dep_mpi_put_short( parsec_execution_stream_t* es,
 #endif  /* 0 != RDEP_MSG_SHORT_LIMIT */
 static int remote_dep_mpi_save_activate_cb(parsec_execution_stream_t* es,
                                            parsec_comm_callback_t* cb, MPI_Status* status);
+static int remote_dep_mpi_save_ttg_cb(parsec_execution_stream_t* es,
+                                      parsec_comm_callback_t* cb, MPI_Status* status);
 static void remote_dep_mpi_get_start(parsec_execution_stream_t* es, parsec_remote_deps_t* deps);
 static void remote_dep_mpi_get_end( parsec_execution_stream_t* es, int idx, parsec_remote_deps_t* deps );
 static int
@@ -195,6 +217,7 @@ parsec_dequeue_t dep_cmd_queue;
 parsec_list_t    dep_cmd_fifo;             /* ordered non threaded fifo */
 parsec_list_t    dep_activates_fifo;       /* ordered non threaded fifo */
 parsec_list_t    dep_activates_noobj_fifo; /* non threaded fifo */
+parsec_list_t    dep_ttg_noobj_fifo;       /* non threaded fifo */
 parsec_list_t    dep_put_fifo;             /* ordered non threaded fifo */
 
 /* help manage the messages in the same category, where a category is either messages
@@ -456,6 +479,42 @@ remote_dep_dequeue_delayed_dep_release(parsec_remote_deps_t *deps)
     return 1;
 }
 
+int remote_dep_ttg_send(int rank, parsec_taskpool_t *tp, void *buffer, size_t size)
+{
+    int total_pack_size = 0;
+    int pack_size;
+    int position = 0;
+    int rc;
+    parsec_ttg_header_t header;
+    header.taskpool_id = tp->taskpool_id;
+    header.data_size = (uint32_t)size;
+    
+    dep_cmd_item_t *item = (dep_cmd_item_t*)calloc(1, sizeof(dep_cmd_item_t));
+    OBJ_CONSTRUCT(item, parsec_list_item_t);
+
+    item->action = DEP_TTG_SEND_MSG;
+    item->priority = 0;
+
+    MPI_Pack_size(1, parsec_ttg_header_dtt, dep_comm, &pack_size);
+    total_pack_size += pack_size;
+    MPI_Pack_size(size, MPI_BYTE, dep_comm, &pack_size);
+    total_pack_size += pack_size;
+    assert( total_pack_size < DEP_TTG_MAX_BUFFER_SIZE );
+    item->cmd.ttg.rank = rank;
+    item->cmd.ttg.packed = (char *)malloc( total_pack_size );
+    rc = MPI_Pack(&header, 1, parsec_ttg_header_dtt, item->cmd.ttg.packed, total_pack_size, &position, dep_comm);
+    assert(MPI_SUCCESS == rc);
+    rc = MPI_Pack(buffer, size, MPI_BYTE, item->cmd.ttg.packed, total_pack_size, &position, dep_comm);
+    PARSEC_DEBUG_VERBOSE(1, parsec_debug_output, "MPI-TTG:\tPayload to send (32 first bytes / %d) = [0x%08x...]",
+                         size, *(unsigned int*)buffer);
+    assert(MPI_SUCCESS == rc);
+    item->cmd.ttg.position = position;
+    
+    parsec_dequeue_push_back(&dep_cmd_queue, (parsec_list_item_t*)item);
+
+    return PARSEC_SUCCESS;
+}
+
 int remote_dep_dequeue_send(int rank,
                             parsec_remote_deps_t* deps)
 {
@@ -558,10 +617,6 @@ remote_dep_mpi_retrieve_datatype(parsec_execution_stream_t *eu,
     return PARSEC_ITERATE_STOP;
 }
 
-int (*parsec_ttg_get_datatype)(parsec_execution_stream_t* es,
-                               const parsec_task_t* task,
-                               parsec_remote_deps_t* origin) = NULL;
-
 /**
  * Retrieve the datatypes involved in this communication. In addition the flag
  * PARSEC_ACTION_RECV_INIT_REMOTE_DEPS set the priority to the maximum priority
@@ -594,10 +649,6 @@ remote_dep_get_datatypes(parsec_execution_stream_t* es,
             assert(origin->incoming_mask == 0);
             return -2; /* taskclass not yet discovered locally. Defer the task activation */
         }
-    }
-    if( PARSEC_TASKPOOL_TYPE_TTG == origin->taskpool->taskpool_type ) {
-        origin->outgoing_mask = origin->incoming_mask;
-        return (*parsec_ttg_get_datatype)(es, &task, origin);
     }
     
     for(i = 0; i < task.task_class->nb_locals; i++)
@@ -895,6 +946,9 @@ remote_dep_dequeue_nothread_progress(parsec_context_t* context,
         remote_dep_nothread_send(es, &item);
         same_pos = item;
         goto have_same_pos;
+    case DEP_TTG_SEND_MSG:
+        remote_dep_nothread_send_ttg(es, item);
+        break;
     case DEP_MEMCPY:
         remote_dep_nothread_memcpy(es, item);
         break;
@@ -940,7 +994,8 @@ static int remote_dep_nothread_memcpy(parsec_execution_stream_t* es,
 enum {
     REMOTE_DEP_ACTIVATE_TAG = 0,
     REMOTE_DEP_GET_DATA_TAG,
-    REMOTE_DEP_MAX_CTRL_TAG
+    REMOTE_DEP_MAX_CTRL_TAG,
+    REMOTE_DEP_TTG_MSG_TAG
 } parsec_remote_dep_tag_t;
 
 #ifdef PARSEC_PROF_TRACE
@@ -1051,7 +1106,6 @@ struct parsec_comm_callback_s {
     long                  storage2;
 };
 
-static MPI_Comm dep_comm;
 static parsec_comm_callback_t *array_of_callbacks;
 static MPI_Request           *array_of_requests;
 static int                   *array_of_indices;
@@ -1065,6 +1119,7 @@ static MPI_Status            *array_of_statuses;
 #define datakey_dtt MPI_LONG
 #define datakey_count 3
 static char **dep_activate_buff;
+static char **dep_ttg_buff;
 static remote_dep_wire_get_t* dep_get_buff;
 
 /* Pointers are converted to long to be used as keys to fetch data in the get
@@ -1099,6 +1154,7 @@ static int remote_dep_mpi_init(parsec_context_t* context)
 
     OBJ_CONSTRUCT(&dep_activates_fifo, parsec_list_t);
     OBJ_CONSTRUCT(&dep_activates_noobj_fifo, parsec_list_t);
+    OBJ_CONSTRUCT(&dep_ttg_noobj_fifo, parsec_list_t);
     OBJ_CONSTRUCT(&dep_put_fifo, parsec_list_t);
 
     if( NULL != context->comm_ctx ) {
@@ -1107,6 +1163,16 @@ static int remote_dep_mpi_init(parsec_context_t* context)
     else {
         MPI_Comm_dup(MPI_COMM_WORLD, &dep_comm);
     }
+
+    int rc;
+    int ao_blocklengths[2] = { 1, 1 };
+    MPI_Aint ao_displacements[2] = {offsetof(parsec_ttg_header_t, taskpool_id), offsetof(parsec_ttg_header_t, data_size) };
+    MPI_Datatype ao_types[2] = {MPI_INT, MPI_INT};
+    rc = MPI_Type_struct(2, ao_blocklengths, ao_displacements, ao_types, &parsec_ttg_header_dtt);
+    assert(MPI_SUCCESS == rc);
+    rc = MPI_Type_commit(&parsec_ttg_header_dtt);
+    assert(MPI_SUCCESS == rc);
+    
     /*
      * Based on MPI 1.1 the MPI_TAG_UB should only be defined
      * on MPI_COMM_WORLD.
@@ -1136,9 +1202,11 @@ static int remote_dep_mpi_init(parsec_context_t* context)
     /* Extend the number of pending activations if we have a large number of peers */
     if( context->nb_nodes > (10*parsec_comm_activations_max) )
         parsec_comm_activations_max = context->nb_nodes / 10;
+    if( context->nb_nodes > (10*parsec_comm_ttg_max) )
+        parsec_comm_ttg_max = context->nb_nodes / 10;
     if( context->nb_nodes > (10*parsec_comm_data_get_max) )
         parsec_comm_data_get_max = context->nb_nodes / 10;
-    DEP_NB_REQ = (parsec_comm_activations_max + parsec_comm_data_get_max +
+    DEP_NB_REQ = (parsec_comm_activations_max + parsec_comm_ttg_max + parsec_comm_data_get_max +
                   parsec_comm_gets_max + parsec_comm_puts_max);
 
     array_of_callbacks = (parsec_comm_callback_t*)calloc(DEP_NB_REQ, sizeof(parsec_comm_callback_t));
@@ -1164,6 +1232,21 @@ static int remote_dep_mpi_init(parsec_context_t* context)
         parsec_comm_last_active_req++;
     }
 
+    dep_ttg_buff = (char**)calloc(parsec_comm_ttg_max, sizeof(char*));
+    dep_ttg_buff[0] = (char*)calloc(parsec_comm_ttg_max, DEP_TTG_MAX_BUFFER_SIZE*sizeof(char));
+    for(i = 0; i < parsec_comm_ttg_max; i++) {
+        dep_ttg_buff[i] = dep_ttg_buff[0] + i * DEP_TTG_MAX_BUFFER_SIZE*sizeof(char);
+        MPI_Recv_init(dep_ttg_buff[i], DEP_TTG_MAX_BUFFER_SIZE, MPI_PACKED,
+                      MPI_ANY_SOURCE, REMOTE_DEP_TTG_MSG_TAG, dep_comm,
+                      &array_of_requests[parsec_comm_last_active_req]);
+        cb = &array_of_callbacks[parsec_comm_last_active_req];
+        cb->fct = remote_dep_mpi_save_ttg_cb;
+        cb->storage1 = parsec_comm_last_active_req;
+        cb->storage2 = i;
+        MPI_Start(&array_of_requests[parsec_comm_last_active_req]);
+        parsec_comm_last_active_req++;
+    }
+    
     dep_get_buff = (remote_dep_wire_get_t*)calloc(parsec_comm_data_get_max, sizeof(remote_dep_wire_get_t));
     for(i = 0; i < parsec_comm_data_get_max; i++) {
         MPI_Recv_init(&dep_get_buff[i], datakey_count, datakey_dtt,
@@ -1195,12 +1278,12 @@ static int remote_dep_mpi_fini(parsec_context_t* context)
     remote_dep_mpi_profiling_fini();
 
     /* Cancel and release all persistent requests */
-    for(i = 0; i < parsec_comm_activations_max + parsec_comm_data_get_max; i++) {
+    for(i = 0; i < parsec_comm_activations_max + parsec_comm_ttg_max + parsec_comm_data_get_max; i++) {
         MPI_Cancel(&array_of_requests[i]);
         MPI_Test(&array_of_requests[i], &flag, &status);
         MPI_Request_free(&array_of_requests[i]);
     }
-    parsec_comm_last_active_req -= (parsec_comm_activations_max + parsec_comm_data_get_max);
+    parsec_comm_last_active_req -= (parsec_comm_activations_max + parsec_comm_ttg_max + parsec_comm_data_get_max);
     assert(0 == parsec_comm_last_active_req);
 
     free(array_of_callbacks); array_of_callbacks = NULL;
@@ -1217,6 +1300,7 @@ static int remote_dep_mpi_fini(parsec_context_t* context)
 
     OBJ_DESTRUCT(&dep_activates_fifo);
     OBJ_DESTRUCT(&dep_activates_noobj_fifo);
+    OBJ_DESTRUCT(&dep_ttg_noobj_fifo);
     OBJ_DESTRUCT(&dep_put_fifo);
     MPI_Comm_free(&dep_comm);
     (void)context;
@@ -1393,6 +1477,14 @@ static int remote_dep_nothread_send(parsec_execution_stream_t* es,
 
         remote_dep_complete_and_cleanup(&deps, 1);
     } while( NULL != ring );
+    return 0;
+}
+
+static int remote_dep_nothread_send_ttg(parsec_execution_stream_t *es, dep_cmd_item_t *item)
+{
+    (void)es;
+    MPI_Send(item->cmd.ttg.packed, item->cmd.ttg.position, MPI_PACKED, item->cmd.ttg.rank, REMOTE_DEP_TTG_MSG_TAG, dep_comm);
+    free(item->cmd.ttg.packed);
     return 0;
 }
 
@@ -1837,6 +1929,78 @@ remote_dep_mpi_save_activate_cb(parsec_execution_stream_t* es,
     return 0;
 }
 
+typedef struct parsec_ttg_msg_s {
+    parsec_list_item_t super;
+    parsec_ttg_header_t header;
+    char data[1];
+} parsec_ttg_msg_t;
+
+typedef void (*ttg_unpack_msg_fct_t)(void *data, size_t size);
+static ttg_unpack_msg_fct_t ttg_unpack_msg_fct = NULL;
+
+void parsec_register_ttg_unpack_msg_fct(ttg_unpack_msg_fct_t fct)
+{
+    ttg_unpack_msg_fct = fct;
+}
+
+static void process_ttg_msg(parsec_ttg_msg_t *item)
+{
+    PARSEC_DEBUG_VERBOSE(1, parsec_debug_output, "MPI-TTG:\tDelivering message %p", item);
+    ttg_unpack_msg_fct(item->data, item->header.data_size);
+    free(item);
+}
+
+static int
+remote_dep_mpi_save_ttg_cb(parsec_execution_stream_t* es,
+                           parsec_comm_callback_t* cb,
+                           MPI_Status* status)
+{
+    int position = 0, length;
+    parsec_ttg_header_t header;
+    parsec_ttg_msg_t *item;
+    parsec_taskpool_t *tp;
+    int rc;
+
+    (void)es;
+    
+    rc = MPI_Get_count(status, MPI_PACKED, &length);
+    assert(MPI_SUCCESS == rc);
+    rc = MPI_Unpack(dep_ttg_buff[cb->storage2], length, &position,
+                    &header, 1, parsec_ttg_header_dtt, dep_comm);
+    assert(MPI_SUCCESS == rc);
+
+    item = (parsec_ttg_msg_t *)malloc(sizeof(parsec_ttg_msg_t) + header.data_size-1);
+    OBJ_CONSTRUCT(item, parsec_list_item_t);
+    item->header = header;
+
+    PARSEC_DEBUG_VERBOSE(1, parsec_debug_output, "MPI-TTG:\tFROM\t%d\tReceived tp_id = %d, size = %d into %p. Position is %d/%d",
+                         status->MPI_SOURCE, header.taskpool_id, header.data_size, item, position, length);
+    
+    rc = MPI_Unpack(dep_ttg_buff[cb->storage2], length, &position,
+                    item->data, header.data_size, MPI_BYTE, dep_comm);
+    assert(MPI_SUCCESS == rc);
+    assert(position == length);
+
+    PARSEC_DEBUG_VERBOSE(1, parsec_debug_output, "MPI-TTG:\tFROM\t%d\tReceived payload of tp_id = %d, size = %d into %p. Position is %d/%d",
+                         status->MPI_SOURCE, header.taskpool_id, header.data_size, item, position, length);
+    
+    tp = parsec_taskpool_lookup( header.taskpool_id );
+    if( NULL == tp ) {
+        PARSEC_DEBUG_VERBOSE(1, parsec_debug_output, "MPI-TTG:\tFROM\t%d\tMessage %p delayed after taskpool is registered",
+                             status->MPI_SOURCE, item);
+        parsec_list_nolock_fifo_push( &dep_ttg_noobj_fifo, &item->super );
+    } else {
+        assert(PARSEC_TASKPOOL_TYPE_TTG == tp->taskpool_type);
+        PARSEC_DEBUG_VERBOSE(1, parsec_debug_output, "MPI-TTG:\tFROM\t%d\tMessage %p can be delivered to TTG layer",
+                             status->MPI_SOURCE, item);
+        process_ttg_msg(item);
+    }
+    
+    /* Let's re-enable the pending request in the same position */
+    MPI_Start(&array_of_requests[cb->storage1]);
+    return 0;
+}
+
 static void remote_dep_mpi_new_taskpool( parsec_execution_stream_t* es,
                                          dep_cmd_item_t *dep_cmd_item )
 {
@@ -1892,6 +2056,20 @@ static void remote_dep_mpi_new_taskpool( parsec_execution_stream_t* es,
             remote_dep_mpi_recv_activate(es, deps, buffer, deps->msg.length, &position);
             free(buffer);
             (void)rc;
+        }
+    }
+    PARSEC_DEBUG_VERBOSE(1, parsec_debug_output, "MPI-TTG:\tTaskpool %d is being registered",
+                         obj->taskpool_id);
+    for(item = PARSEC_LIST_ITERATOR_FIRST(&dep_ttg_noobj_fifo);
+        item != PARSEC_LIST_ITERATOR_END(&dep_ttg_noobj_fifo);
+        item = PARSEC_LIST_ITERATOR_NEXT(item) ) {
+        parsec_ttg_msg_t *msg = (parsec_ttg_msg_t*)item;
+        if( obj->taskpool_id == msg->header.taskpool_id ) {
+            assert(obj->taskpool_type == PARSEC_TASKPOOL_TYPE_TTG);
+            item = parsec_list_nolock_remove(&dep_ttg_noobj_fifo, item);
+            PARSEC_DEBUG_VERBOSE(1, parsec_debug_output, "MPI-TTG:\tMessage %p can be delivered to TTG layer at taskpool registration",
+                                 item);
+            process_ttg_msg(msg);
         }
     }
 }
