@@ -111,6 +111,8 @@ typedef struct parsec_termdet_fourcounter_monitor_s {
 
 static void parsec_termdet_fourcounter_msg_down(const parsec_termdet_fourcounter_msg_down_t *msg, int src, parsec_taskpool_t *tp);
 static void parsec_termdet_fourcounter_msg_up(const parsec_termdet_fourcounter_msg_up_t *msg, int src, parsec_taskpool_t *tp);
+static void parsec_termdet_fourcounter_check_state_workload_changed(parsec_termdet_fourcounter_monitor_t *tpm,
+                                                                    parsec_taskpool_t *tp);
 
 int parsec_termdet_fourcounter_msg_dispatch(int src, parsec_taskpool_t *tp, void *msg, size_t size)
 {
@@ -255,7 +257,9 @@ static int parsec_termdet_fourcounter_taskpool_ready(parsec_taskpool_t *tp)
     tpm->state = PARSEC_TERMDET_FOURCOUNTER_BUSY_WAITING_FOR_CHILDREN; /* This is true even if nb_children == 0:
                                                                         * we will go in WAITING_FOR_PARENT only after
                                                                         * we sent the UP message */
-    PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "TERMDET-4C:\tProcess changed state for BUSY (taskpool ready)");
+    PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "TERMDET-4C:\tProcess changed state for WAITING_FOR_CHILDREN (taskpool ready)");
+    /* Maybe we are already done */
+    parsec_termdet_fourcounter_check_state_workload_changed(tpm, tp);
     parsec_atomic_rwlock_wrunlock(&tpm->rw_lock);
     return PARSEC_SUCCESS;
 }
@@ -298,7 +302,7 @@ static void parsec_termdet_fourcounter_send_up_messages(parsec_termdet_fourcount
         if( msg_down.result ) {
             PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "TERMDET-4C:\tTermination detected on root decision");
             gettimeofday(&tpm->stats_time_end, NULL);
-            parsec_termdet_fourcounter_write_stats(tp, stdout);
+            //parsec_termdet_fourcounter_write_stats(tp, stdout);
             tp->tdm.monitor = PARSEC_TERMDET_FOURCOUNTER_TERMINATED;
             tp->tdm.callback(tp);
             free(tpm);
@@ -491,7 +495,6 @@ static int parsec_termdet_fourcounter_incoming_message_start(parsec_taskpool_t *
     assert( tp->tdm.monitor != PARSEC_TERMDET_FOURCOUNTER_TERMINATED );
     
     tpm = tp->tdm.monitor;
-    assert( tpm->state > PARSEC_TERMDET_FOURCOUNTER_NOT_READY);
 
     parsec_atomic_rwlock_wrlock(&tpm->rw_lock);
     /* If we were ready or more, we become busy */
@@ -530,7 +533,6 @@ static int parsec_termdet_fourcounter_incoming_message_end(parsec_taskpool_t *tp
     tpm = tp->tdm.monitor;
 
     parsec_atomic_rwlock_wrlock(&tpm->rw_lock);
-    assert( tpm->state > PARSEC_TERMDET_FOURCOUNTER_NOT_READY);
     tpm->messages_received++;
     parsec_atomic_rwlock_wrunlock(&tpm->rw_lock);
 
@@ -570,7 +572,7 @@ static void parsec_termdet_fourcounter_msg_down(const parsec_termdet_fourcounter
     if(msg->result) {
         assert(tpm->state == PARSEC_TERMDET_FOURCOUNTER_IDLE_WAITING_FOR_PARENT);
         gettimeofday(&tpm->stats_time_end, NULL);
-        parsec_termdet_fourcounter_write_stats(tp, stdout);
+        //parsec_termdet_fourcounter_write_stats(tp, stdout);
         tp->tdm.monitor = PARSEC_TERMDET_FOURCOUNTER_TERMINATED;
         PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "TERMDET-4C:\tTermination detected on DOWN(true) message");
         parsec_atomic_rwlock_wrunlock(&tpm->rw_lock);
