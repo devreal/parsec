@@ -113,6 +113,8 @@ static void parsec_termdet_fourcounter_msg_down(const parsec_termdet_fourcounter
 static void parsec_termdet_fourcounter_msg_up(const parsec_termdet_fourcounter_msg_up_t *msg, int src, parsec_taskpool_t *tp);
 static void parsec_termdet_fourcounter_check_state_workload_changed(parsec_termdet_fourcounter_monitor_t *tpm,
                                                                     parsec_taskpool_t *tp);
+static void parsec_termdet_fourcounter_check_state_message_received(parsec_termdet_fourcounter_monitor_t *tpm,
+                                                                    parsec_taskpool_t *tp);
 
 int parsec_termdet_fourcounter_msg_dispatch(int src, parsec_taskpool_t *tp, void *msg, size_t size)
 {
@@ -196,7 +198,12 @@ static void parsec_termdet_fourcounter_monitor_taskpool(parsec_taskpool_t *tp,
     tpm->messages_received = 0;
     tpm->state = PARSEC_TERMDET_FOURCOUNTER_NOT_READY;
     PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "TERMDET-4C:\tProcess initializes state to NOT_READY");
-    tpm->nb_child_left = -1;
+    tpm->nb_child_left = 0;   /* This is complicated: it should be initialized at the real number, however,
+                               * the taskpool is not connected to a context yet. Connection will only happen
+                               * later, when the taskpool becomes ready for dynamic termination detection.
+                               * So, we start with 0, and if children send us some UP messages, this will
+                               * go down in the negative. When the taskpool becomes ready, we will compute
+                               * how many more messages are still expected. */
     tpm->acc_sent = 0;
     tpm->acc_received = 0;
     tpm->last_acc_sent_at_root = -1;
@@ -253,13 +260,16 @@ static int parsec_termdet_fourcounter_taskpool_ready(parsec_taskpool_t *tp)
     tpm = (parsec_termdet_fourcounter_monitor_t*)tp->tdm.monitor;
     assert( tpm->state == PARSEC_TERMDET_FOURCOUNTER_NOT_READY );
     parsec_atomic_rwlock_wrlock(&tpm->rw_lock);
-    tpm->nb_child_left = parsec_termdet_fourcounter_topology_nb_children(tp);
+    /* See comment in monitor_taskpool: we need to sum here, to manage early termination notifications */
+    tpm->nb_child_left += parsec_termdet_fourcounter_topology_nb_children(tp);
     tpm->state = PARSEC_TERMDET_FOURCOUNTER_BUSY_WAITING_FOR_CHILDREN; /* This is true even if nb_children == 0:
                                                                         * we will go in WAITING_FOR_PARENT only after
                                                                         * we sent the UP message */
-    PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "TERMDET-4C:\tProcess changed state for WAITING_FOR_CHILDREN (taskpool ready)");
-    /* Maybe we are already done */
+    PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "TERMDET-4C:\tProcess changed state for BUSY_WAITING_FOR_CHILDREN (taskpool ready)");
+    /* Maybe we are already done, we need first to check if we are idle or not,
+     * then to check if we received contributions from all the children */
     parsec_termdet_fourcounter_check_state_workload_changed(tpm, tp);
+    parsec_termdet_fourcounter_check_state_message_received(tpm, tp);
     parsec_atomic_rwlock_wrunlock(&tpm->rw_lock);
     return PARSEC_SUCCESS;
 }
@@ -330,8 +340,7 @@ static void parsec_termdet_fourcounter_send_up_messages(parsec_termdet_fourcount
 static void parsec_termdet_fourcounter_check_state_message_received(parsec_termdet_fourcounter_monitor_t *tpm,
                                                                     parsec_taskpool_t *tp)
 {
-    if(tp->tdm.counters.nb_tasks == 0 &&
-       tp->tdm.counters.nb_pending_actions == 0 &&
+    if(tp->tdm.counters.atomic == 0 &&
        tpm->state == PARSEC_TERMDET_FOURCOUNTER_IDLE_WAITING_FOR_CHILDREN &&
        tpm->nb_child_left == 0) {
         parsec_termdet_fourcounter_send_up_messages(tpm, tp);
@@ -609,11 +618,11 @@ static void parsec_termdet_fourcounter_msg_up(const parsec_termdet_fourcounter_m
     parsec_atomic_rwlock_wrlock(&tpm->rw_lock);
     tpm->stats_nb_recv_msg++;
     tpm->stats_nb_recv_bytes += sizeof(parsec_termdet_fourcounter_msg_up_t)+sizeof(int);
-    assert( tpm->nb_child_left > 0 );
     
     tpm->acc_received += msg->nb_received;
     tpm->acc_sent += msg->nb_sent;
     tpm->nb_child_left--;
+    PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "TERMDET-4C:\tNumber of children left: %d", tpm->nb_child_left);
 
     parsec_termdet_fourcounter_check_state_message_received(tpm, tp);
     if(PARSEC_TERMDET_FOURCOUNTER_TERMINATED != tp->tdm.monitor)
