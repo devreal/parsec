@@ -1175,7 +1175,8 @@ static int remote_dep_nothread_opaque_msg(parsec_execution_stream_t* es,
 {
     dep_cmd_t *cmd = &item->cmd;
     PARSEC_DEBUG_VERBOSE(10, parsec_debug_output,
-                         "OPAQUE_MPI:\tSending %d bytes to %d with tag %d: [%08x %02x %02x %02x %02x %02x %02x %02x %02x]",
+                         "OPAQUE_MPI%02d:\tSending %d bytes to %d with tag %d: [%08x %02x %02x %02x %02x %02x %02x %02x %02x]",
+                         cmd->opaque_msg.tag - REMOTE_DEP_OPAQUE_TAG_0,
                          cmd->opaque_msg.nb_bytes, cmd->opaque_msg.dst_rank, cmd->opaque_msg.tag,
                          cmd->opaque_msg.payload.tp_id,
                          cmd->opaque_msg.payload.bytes[0], cmd->opaque_msg.payload.bytes[1], cmd->opaque_msg.payload.bytes[2], cmd->opaque_msg.payload.bytes[3],
@@ -2067,10 +2068,10 @@ static void remote_dep_mpi_new_taskpool( parsec_execution_stream_t* es,
         item != PARSEC_LIST_ITERATOR_END(&opaque_noobj_fifo);
         item = PARSEC_LIST_ITERATOR_NEXT(item)) {
         delayed_opaque_msg_t* msg = (delayed_opaque_msg_t*)item;
-        PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "OPAQUE_MPI:\tFound opaque message of opaque_id %d and %d bytes from %d, received for taskpool ID %u",
+        PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "OPAQUE_MPI%02d:\tFound opaque message of %d bytes from %d, received for taskpool ID %u",
                              msg->cb_id, msg->nb_bytes, msg->src, msg->tp_id);
         if( msg->tp_id == obj->taskpool_id ) {
-            PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "OPAQUE_MPI:\tDelivering opaque message of opaque_id %d and %d bytes from %d, received for taskpool ID %u that is new",
+            PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "OPAQUE_MPI%02d:\tDelivering opaque message of %d bytes from %d, received for taskpool ID %u that is new",
                                  msg->cb_id, msg->nb_bytes, msg->src, msg->tp_id);
             opaque_cb[msg->cb_id](msg->src, obj, msg->bytes, msg->nb_bytes); // thomas
             item = parsec_list_nolock_remove(&opaque_noobj_fifo, item);
@@ -2247,13 +2248,17 @@ static int remote_dep_mpi_opaque_recv(parsec_execution_stream_t* es,
             msg->tp_id = dep_opaque_buff[cb->storage2]->tp_id;
             msg->nb_bytes = length; //thomas
             memcpy(msg->bytes, dep_opaque_buff[cb->storage2]->bytes, length);
-            PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "OPAQUE_MPI:\tThreadID: %d Delaying an opaque message of opaque_id %d and %d bytes from %d, received for taskpool ID %u that is unknown",
-                                 (int)pthread_self(), cb->storage2, length, status->MPI_SOURCE, msg->tp_id);
+            PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "OPAQUE_MPI%02d:\tThreadID: %d Delaying an opaque message of %d bytes from %d, received for taskpool ID %u that is unknown",
+                                 cb->storage2, (int)pthread_self(), length, status->MPI_SOURCE, msg->tp_id);
             parsec_list_nolock_fifo_push(&opaque_noobj_fifo, (parsec_list_item_t*)msg);
         } else {
+            PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "OPAQUE_MPI%02d:\tThreadID: %d Delivering opaque message of %d bytes from %d, received for taskpool ID %u",
+                                 cb->storage2, (int)pthread_self(), length, status->MPI_SOURCE, dep_opaque_buff[cb->storage2]->tp_id);
             opaque_cb[cb->storage2](status->MPI_SOURCE, tp, dep_opaque_buff[cb->storage2]->bytes, length);
         }
     } else {
+        PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "OPAQUE_MPI%02d:\tThreadID: %d Delivering opaque message of %d bytes from %d, received without taskpool",
+                                 cb->storage2, (int)pthread_self(), length, status->MPI_SOURCE);
         opaque_cb[cb->storage2](status->MPI_SOURCE, tp, dep_opaque_buff[cb->storage2]->bytes, length);
     }
     
@@ -2293,8 +2298,8 @@ int parsec_comm_register_callback(int *tag, size_t max_msg_size, int tp_flag, pa
                   MPI_ANY_SOURCE, *tag, dep_comm,
                   &array_of_requests[req_index]);
 
-    PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "OPAQUE_MPI:\tRegistered callback for messages of %d bytes, under tag %d request index %d, opaque callback %d\n",
-                         max_msg_size + sizeof(int), *tag, req_index, parsec_comm_next_opaque);
+    PARSEC_DEBUG_VERBOSE(10, parsec_debug_output, "OPAQUE_MPI%02d:\tRegistered callback for messages of %d bytes, under tag %d request index %d, opaque callback %d\n",
+                         parsec_comm_next_opaque, max_msg_size + sizeof(int), *tag, req_index, parsec_comm_next_opaque);
     
     MPI_Start(&array_of_requests[req_index]);
     parsec_comm_next_opaque++;
