@@ -3,7 +3,11 @@
 #include "parsec/arena.h"
 
 #include "tree_dist.h"
+#if defined(USE_DYN)
+#include "project_dyn.h"
+#else
 #include "project.h"
+#endif
 #include "walk_utils.h" /** Must be included before walk.h */
 #include "walk.h"
 
@@ -141,7 +145,11 @@ int main(int argc, char *argv[])
     int rank, world;
     tree_dist_t *treeA;
     two_dim_block_cyclic_t fakeDesc;
+#if defined(USE_DYN)
+    parsec_project_dyn_taskpool_t *project;
+#else
     parsec_project_taskpool_t *project;
+#endif
     parsec_walk_taskpool_t *walker;
     parsec_arena_t arena;
     int do_checks = 0, be_verbose = 0;
@@ -248,16 +256,25 @@ int main(int argc, char *argv[])
     }
     MPI_Barrier(MPI_COMM_WORLD);
 
+#if defined(USE_DYN)
+    project = parsec_project_dyn_new(treeA, world, (parsec_data_collection_t*)&fakeDesc, threshold, be_verbose, alpha);
+    project->arenas[PARSEC_project_dyn_DEFAULT_ARENA] = &arena;
+#else
     project = parsec_project_new(treeA, world, (parsec_data_collection_t*)&fakeDesc, threshold, be_verbose, alpha);
     project->arenas[PARSEC_project_DEFAULT_ARENA] = &arena;
+#endif
     rc = parsec_context_add_taskpool(parsec, &project->super);
     PARSEC_CHECK_ERROR(rc, "parsec_context_add_taskpool");
     rc = parsec_context_start(parsec);
     PARSEC_CHECK_ERROR(rc, "parsec_context_start");
     rc = parsec_context_wait(parsec);
     PARSEC_CHECK_ERROR(rc, "parsec_context_wait");
-        
+
+#if defined(USE_DYN)
+    project->arenas[PARSEC_project_dyn_DEFAULT_ARENA] = NULL;
+#else
     project->arenas[PARSEC_project_DEFAULT_ARENA] = NULL;
+#endif    
     parsec_taskpool_free(&project->super);
     ret = 0;
 #if 0

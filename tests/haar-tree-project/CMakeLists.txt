@@ -11,7 +11,7 @@ parsec_addtest(C project "main.c;${project_generated};tree_dist.c")
 parsec_addtest(C rwalk "rand_walk.c;${rwalk_generated}")
 parsec_addtest(C irtest "ir_test.c;${rwalk_generated};${project_dyn_generated};osu_allreduce.c;osu_coll.c;tree_dist.c")
 parsec_addtest(C project_dyn "main.c;${project_dyn_generated};tree_dist.c")
-target_compile_definitions(project_dyn PUBLIC parsec_project_new=parsec_project_dyn_new)
+target_compile_definitions(project_dyn PUBLIC USE_DYN=1)
 target_compile_definitions(irtest PUBLIC parsec_project_new=parsec_project_dyn_new)
 
 add_test(unit_haar_tree_shm ${SHM_TEST_CMD_LIST} ./project -x)

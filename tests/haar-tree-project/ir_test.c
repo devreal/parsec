@@ -6,7 +6,7 @@
 
 #include "tree_dist.h"
 #include "random_walk.h"
-#include "project.h"
+#include "project_dyn.h"
 
 #include <unistd.h>
 #include <string.h>
@@ -102,7 +102,7 @@ int main(int argc, char *argv[])
     int rank, world;
     two_dim_block_cyclic_t fakeDesc;
     parsec_random_walk_taskpool_t *rwalk;
-    parsec_project_taskpool_t *proj1, *proj2;
+    parsec_project_dyn_taskpool_t *proj1, *proj2;
     parsec_arena_t arena;
     int pargc = 0, i, dashdash = -1;
     char **pargv;
@@ -214,11 +214,11 @@ int main(int argc, char *argv[])
     rc = parsec_enqueue(parsec, &rwalk->super);
     PARSEC_CHECK_ERROR(rc, "parsec_enqueue");
 #if 0
-    proj1 = parsec_project_new(treeA, world, (parsec_data_collection_t*)&fakeDesc, 1e-13, verbose, 0.33333);
-    proj1->arenas[PARSEC_project_DEFAULT_ARENA] = &arena;
+    proj1 = parsec_project_dyn_new(treeA, world, (parsec_data_collection_t*)&fakeDesc, 1e-13, verbose, 0.33333);
+    proj1->arenas[PARSEC_project_dyn_DEFAULT_ARENA] = &arena;
     rc = parsec_enqueue(parsec, &proj1->super);
     PARSEC_CHECK_ERROR(rc, "parsec_enqueue");
-    proj2 = parsec_project_new(treeA, world, (parsec_data_collection_t*)&fakeDesc, 1e-13, verbose, 0.66666);
+    proj2 = parsec_project_dyn_new(treeA, world, (parsec_data_collection_t*)&fakeDesc, 1e-13, verbose, 0.66666);
     rc = parsec_enqueue(parsec, &proj2->super);
     PARSEC_CHECK_ERROR(rc, "parsec_enqueue");
 #endif
