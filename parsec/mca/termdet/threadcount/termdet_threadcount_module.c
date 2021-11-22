@@ -87,6 +87,13 @@ typedef enum {
  * detecting the termination. */
 #define PARSEC_TERMDET_THREADCOUNT_TERMINATED ((void*)(0x1))
 
+union cache_aligned_counter_u {
+    char __size[64];
+    int64_t value;
+};
+
+typedef union cache_aligned_counter_u cache_aligned_counter_t;
+
 typedef struct parsec_termdet_threadcount_monitor_s {
     parsec_atomic_lock_t   lock;                /**< Lock used to check for state changes */
     parsec_atomic_rwlock_t rw_lock;             /**< Operations that change the state take the write lock, operations that
@@ -114,7 +121,7 @@ typedef struct parsec_termdet_threadcount_monitor_s {
     int nb_threads;
     /* per-thread count of tasks discovered (+1) and executed (-1)
      * the sum of all thread-specific task counts reaches zero upon local completion */
-    int64_t thread_task_counts[];
+    cache_aligned_counter_t thread_task_counts[];
 } parsec_termdet_threadcount_monitor_t;
 
 static void parsec_termdet_threadcount_check_state_workload_changed(parsec_termdet_threadcount_monitor_t *tpm,
@@ -267,7 +274,7 @@ static void parsec_termdet_threadcount_monitor_taskpool(parsec_taskpool_t *tp,
 
     tpm->nb_threads = nb_threads;
     for (int i = 0; i < nb_threads; ++i) {
-        tpm->thread_task_counts[i] = 0;
+        tpm->thread_task_counts[i].value = 0;
     }
 
     tp->nb_tasks = 0;
@@ -437,7 +444,7 @@ static void parsec_termdet_threadcount_check_state_workload_changed(parsec_termd
      * no lock required, this is an approximation and once all
      * tasks are done we'll end up with 0 */
     for (int i = 0; i < nb_threads; ++i) {
-        num_tasks += tpm->thread_task_counts[i];
+        num_tasks += tpm->thread_task_counts[i].value;
     }
     tp->nb_tasks = num_tasks;
     if(tp->nb_tasks == 0 && tp->nb_pending_actions == 0) {
@@ -481,13 +488,13 @@ static int parsec_termdet_threadcount_taskpool_set_nb_tasks(parsec_taskpool_t *t
 
     /* zero out all thread-local values */
     for (int i = 0; i < nb_threads; ++i) {
-        tpm->thread_task_counts[i] = 0;
+        tpm->thread_task_counts[i].value = 0;
     }
 
     /* set this thread's value */
     int thread_id = parsec_my_execution_stream()->th_id;
     assert(thread_id < tpm->nb_threads);
-    tpm->thread_task_counts[thread_id] = v;
+    tpm->thread_task_counts[thread_id].value = v;
 #if 0
     parsec_atomic_rwlock_wrlock(&tpm->rw_lock);
     if( (int)tp->nb_tasks != v) {
@@ -533,7 +540,7 @@ static int parsec_termdet_threadcount_taskpool_addto_nb_tasks(parsec_taskpool_t 
     /* set this thread's value */
     int thread_id = parsec_my_execution_stream()->th_id;
     assert(thread_id < tpm->nb_threads);
-    tpm->thread_task_counts[thread_id] = v;
+    tpm->thread_task_counts[thread_id].value = v;
 
 #if 0
     if (parsec_atomic_trylock(&tpm->lock)) {
