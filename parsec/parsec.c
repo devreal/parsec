@@ -565,6 +565,8 @@ parsec_context_t* parsec_init( int nb_cores, int* pargc, char** pargv[] )
     context->comm_th_core        = -1;
 #endif  /* defined(PARSEC_HAVE_HWLOC) */
 
+    PARSEC_OBJ_CONSTRUCT(&context->active_taskpool_list, parsec_list_t);
+
     /* TODO: nb_cores should depend on the vp_id */
     nb_total_comp_threads = 0;
     for(p = 0; p < nb_vp; p++) {

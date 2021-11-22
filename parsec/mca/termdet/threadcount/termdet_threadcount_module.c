@@ -290,7 +290,13 @@ recheck:
         return PARSEC_TERM_TP_TERMINATED;
     tpm = tp->tdm.monitor;
     if (check_again) {
+        parsec_atomic_rwlock_wrlock(&tpm->rw_lock);
         parsec_termdet_threadcount_check_state_workload_changed(tpm, tp);
+        /* the call above might free the monitor */
+        if( tp->tdm.monitor == PARSEC_TERMDET_THREADCOUNT_TERMINATED )
+            return PARSEC_TERM_TP_TERMINATED;
+        tpm = tp->tdm.monitor;
+        parsec_atomic_rwlock_wrunlock(&tpm->rw_lock);
         check_again = 0;
         goto recheck;
     }
@@ -529,6 +535,7 @@ static int parsec_termdet_threadcount_taskpool_addto_nb_tasks(parsec_taskpool_t 
     assert(thread_id < tpm->nb_threads);
     tpm->thread_task_counts[thread_id] = v;
 
+#if 0
     if (parsec_atomic_trylock(&tpm->lock)) {
         parsec_atomic_rwlock_wrlock(&tpm->rw_lock);
         parsec_termdet_threadcount_check_state_workload_changed(tpm, tp);
@@ -536,7 +543,9 @@ static int parsec_termdet_threadcount_taskpool_addto_nb_tasks(parsec_taskpool_t 
         if( tp->tdm.monitor != PARSEC_TERMDET_THREADCOUNT_TERMINATED )
             parsec_atomic_rwlock_wrunlock(&tpm->rw_lock);
         parsec_atomic_unlock(&tpm->lock);
-    } else {
+    } else
+#endif
+    {
         ret = tp->nb_tasks + v;
     }
 

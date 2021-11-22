@@ -205,6 +205,27 @@ int parsec_taskpool_update_runtime_nbtask(parsec_taskpool_t *tp, int32_t nb_task
     return 0;
 }
 
+static inline void query_termination(parsec_context_t *context)
+{
+    /* query the state of each taskpool
+     * TODO: can we get rid of the active_taskpools field?
+     * TODO: PARSEC_LIST_SAFE_ITERATOR would be handy here :/ */
+    parsec_list_lock(&context->active_taskpool_list);
+    parsec_list_item_t *item = PARSEC_LIST_ITERATOR_FIRST(&context->active_taskpool_list),
+                       *next = item;
+    while ((item = next) != PARSEC_LIST_ITERATOR_END(&context->active_taskpool_list))
+    {
+        next = PARSEC_LIST_ITERATOR_NEXT(item);
+        parsec_taskpool_t *tp = (parsec_taskpool_t*)item;
+        bool done = (tp->tdm.module->taskpool_state(tp) == PARSEC_TERM_TP_TERMINATED);
+        if (done) {
+            /* remove from list */
+            parsec_list_nolock_remove(&tp->context->active_taskpool_list, &tp->super);
+        }
+    }
+    parsec_list_unlock(&context->active_taskpool_list);
+}
+
 static inline int all_tasks_done(parsec_context_t* context)
 {
     return (context->active_taskpools == 0);
@@ -542,6 +563,8 @@ int __parsec_context_wait( parsec_execution_stream_t* es )
             (void)rc;  /* for now ignore the return value */
 
             nbiterations++;
+        } else if (PARSEC_THREAD_IS_MASTER(es)) {
+            query_termination(parsec_context);
         }
     }
 
@@ -609,6 +632,8 @@ int parsec_context_add_taskpool( parsec_context_t* context, parsec_taskpool_t* t
     
     /* Update the number of pending taskpools */
     (void)parsec_atomic_fetch_inc_int32( &context->active_taskpools );
+    /* TODO: DTD has its own list of taskpools in the context, need to merge */
+    parsec_list_append(&context->active_taskpool_list, &tp->super);
 
     /* If necessary trigger the on_enqueue callback */
     if( NULL != tp->on_enqueue ) {
