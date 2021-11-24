@@ -46,6 +46,7 @@ static int parsec_termdet_fourcounter_incoming_message_start(parsec_taskpool_t *
                                                              const parsec_remote_deps_t *msg);
 static int parsec_termdet_fourcounter_incoming_message_end(parsec_taskpool_t *tp,
                                                            const parsec_remote_deps_t *msg);
+static int parsec_termdet_fourcounter_switch_taskpool(parsec_taskpool_t *tp);
 static int parsec_termdet_fourcounter_write_stats(parsec_taskpool_t *tp, FILE *fp);
 
 const parsec_termdet_module_t parsec_termdet_fourcounter_module = {
@@ -63,6 +64,7 @@ const parsec_termdet_module_t parsec_termdet_fourcounter_module = {
         parsec_termdet_fourcounter_outgoing_message_pack,
         parsec_termdet_fourcounter_incoming_message_start,
         parsec_termdet_fourcounter_incoming_message_end,
+        parsec_termdet_fourcounter_switch_taskpool,
         parsec_termdet_fourcounter_write_stats
     }
 };
@@ -694,5 +696,11 @@ static int parsec_termdet_fourcounter_write_stats(parsec_taskpool_t *tp, FILE *f
             (unsigned int)t2.tv_sec, (unsigned int)t2.tv_usec,
             (unsigned int)t1.tv_sec, (unsigned int)t1.tv_usec);
 
+    return PARSEC_SUCCESS;
+}
+
+static int parsec_termdet_fourcounter_switch_taskpool(parsec_taskpool_t *tp)
+{
+    (void)tp;
     return PARSEC_SUCCESS;
 }

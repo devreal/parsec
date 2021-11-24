@@ -45,6 +45,7 @@ static int parsec_termdet_local_incoming_message_start(parsec_taskpool_t *tp,
                                                        const parsec_remote_deps_t *msg);
 static int parsec_termdet_local_incoming_message_end(parsec_taskpool_t *tp,
                                                      const parsec_remote_deps_t *msg);
+static int parsec_termdet_local_switch_taskpool(parsec_taskpool_t *tp);
 
 const parsec_termdet_module_t parsec_termdet_local_module = {
     &parsec_termdet_local_component,
@@ -57,10 +58,11 @@ const parsec_termdet_module_t parsec_termdet_local_module = {
         parsec_termdet_local_taskpool_set_nb_tasks,
         parsec_termdet_local_taskpool_set_nb_pa,
         0,
-        parsec_termdet_local_outgoing_message_start, 
+        parsec_termdet_local_outgoing_message_start,
         parsec_termdet_local_outgoing_message_pack,
         parsec_termdet_local_incoming_message_start,
         parsec_termdet_local_incoming_message_end,
+        parsec_termdet_local_switch_taskpool,
         NULL
     }
 };
@@ -227,7 +229,7 @@ static int parsec_termdet_local_incoming_message_start(parsec_taskpool_t *tp,
     (void)position;
     (void)buffer_size;
     (void)msg;
-    
+
     return PARSEC_SUCCESS;
 }
 
@@ -236,5 +238,12 @@ static int parsec_termdet_local_incoming_message_end(parsec_taskpool_t *tp,
 {
     (void)tp;
     (void)msg;
+    return PARSEC_SUCCESS;
+}
+
+
+static int parsec_termdet_local_switch_taskpool(parsec_taskpool_t *tp)
+{
+    (void)tp;
     return PARSEC_SUCCESS;
 }

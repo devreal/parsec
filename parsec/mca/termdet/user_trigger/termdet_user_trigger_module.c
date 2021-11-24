@@ -45,6 +45,7 @@ static int parsec_termdet_user_trigger_incoming_message_start(parsec_taskpool_t 
                                                               const parsec_remote_deps_t *msg);
 static int parsec_termdet_user_trigger_incoming_message_end(parsec_taskpool_t *tp,
                                                             const parsec_remote_deps_t *msg);
+static int parsec_termdet_user_trigger_switch_taskpool(parsec_taskpool_t *tp);
 
 const parsec_termdet_module_t parsec_termdet_user_trigger_module = {
     &parsec_termdet_user_trigger_component,
@@ -61,6 +62,7 @@ const parsec_termdet_module_t parsec_termdet_user_trigger_module = {
         parsec_termdet_user_trigger_outgoing_message_pack,
         parsec_termdet_user_trigger_incoming_message_start,
         parsec_termdet_user_trigger_incoming_message_end,
+        parsec_termdet_user_trigger_switch_taskpool,
         NULL
     }
 };
@@ -338,7 +340,7 @@ static int parsec_termdet_user_trigger_incoming_message_start(parsec_taskpool_t 
     (void)position;
     (void)buffer_size;
     (void)msg;
-    
+
     return PARSEC_SUCCESS;
 }
 
@@ -347,5 +349,11 @@ static int parsec_termdet_user_trigger_incoming_message_end(parsec_taskpool_t *t
 {
     (void)tp;
     (void)msg;
+    return PARSEC_SUCCESS;
+}
+
+static int parsec_termdet_user_trigger_switch_taskpool(parsec_taskpool_t *tp)
+{
+    (void)tp;
     return PARSEC_SUCCESS;
 }

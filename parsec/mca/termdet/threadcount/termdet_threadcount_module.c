@@ -18,6 +18,8 @@
 #include "parsec/mca/termdet/threadcount/termdet_threadcount.h"
 #include "parsec/vpmap.h"
 
+#include <threads.h>
+
 /**
  * Module functions
  */
@@ -47,6 +49,7 @@ static int parsec_termdet_threadcount_incoming_message_start(parsec_taskpool_t *
                                                              const parsec_remote_deps_t *msg);
 static int parsec_termdet_threadcount_incoming_message_end(parsec_taskpool_t *tp,
                                                            const parsec_remote_deps_t *msg);
+static int parsec_termdet_threadcount_switch_taskpool(parsec_taskpool_t *tp);
 static int parsec_termdet_threadcount_write_stats(parsec_taskpool_t *tp, FILE *fp);
 
 struct threadcount_monitor_s {
@@ -70,6 +73,7 @@ const parsec_termdet_module_t parsec_termdet_threadcount_module = {
         parsec_termdet_threadcount_outgoing_message_pack,
         parsec_termdet_threadcount_incoming_message_start,
         parsec_termdet_threadcount_incoming_message_end,
+        parsec_termdet_threadcount_switch_taskpool,
         parsec_termdet_threadcount_write_stats
     }
 };
@@ -87,10 +91,15 @@ typedef enum {
  * detecting the termination. */
 #define PARSEC_TERMDET_THREADCOUNT_TERMINATED ((void*)(0x1))
 
-union cache_aligned_counter_u {
-    char __size[64];
-    int64_t value;
+struct taskpool_counter_s {
+    parsec_taskpool_t *taskpool;
+    int64_t            value;
 };
+
+typedef struct taskpool_counter_s taskpool_counter_t;
+
+/* the thread's currently registered taskpool */
+static thread_local taskpool_counter_t current_taskpool = {NULL, 0};
 
 typedef union cache_aligned_counter_u cache_aligned_counter_t;
 
@@ -118,10 +127,6 @@ typedef struct parsec_termdet_threadcount_monitor_s {
     struct timeval stats_time_start;
     struct timeval stats_time_last_idle;
     struct timeval stats_time_end;
-    int nb_threads;
-    /* per-thread count of tasks discovered (+1) and executed (-1)
-     * the sum of all thread-specific task counts reaches zero upon local completion */
-    cache_aligned_counter_t thread_task_counts[];
 } parsec_termdet_threadcount_monitor_t;
 
 static void parsec_termdet_threadcount_check_state_workload_changed(parsec_termdet_threadcount_monitor_t *tpm,
@@ -250,9 +255,7 @@ static void parsec_termdet_threadcount_monitor_taskpool(parsec_taskpool_t *tp,
 {
     parsec_termdet_threadcount_monitor_t *tpm;
     assert(&parsec_termdet_threadcount_module.module == tp->tdm.module);
-    int nb_threads = vpmap_get_nb_threads_in_vp(0);
-    tpm = (parsec_termdet_threadcount_monitor_t*)malloc(sizeof(parsec_termdet_threadcount_monitor_t)
-                                                          + nb_threads * sizeof(tpm->thread_task_counts[0]));
+    tpm = (parsec_termdet_threadcount_monitor_t*)malloc(sizeof(parsec_termdet_threadcount_monitor_t));
     tp->tdm.callback = cb;
     tpm->messages_sent = 0;
     tpm->messages_received = 0;
@@ -271,11 +274,6 @@ static void parsec_termdet_threadcount_monitor_taskpool(parsec_taskpool_t *tp,
     tpm->stats_nb_recv_msg = 0;
     tpm->stats_nb_sent_bytes = 0;
     tpm->stats_nb_recv_bytes = 0;
-
-    tpm->nb_threads = nb_threads;
-    for (int i = 0; i < nb_threads; ++i) {
-        tpm->thread_task_counts[i].value = 0;
-    }
 
     tp->nb_tasks = 0;
     tp->nb_pending_actions = 0;
@@ -436,16 +434,6 @@ static void parsec_termdet_threadcount_check_state_message_received(parsec_termd
 static void parsec_termdet_threadcount_check_state_workload_changed(parsec_termdet_threadcount_monitor_t *tpm,
                                                                     parsec_taskpool_t *tp)
 {
-
-    int nb_threads = tpm->nb_threads;
-    int64_t num_tasks = 0;
-    /* accumulate task counts of all threads
-     * no lock required, this is an approximation and once all
-     * tasks are done we'll end up with 0 */
-    for (int i = 0; i < nb_threads; ++i) {
-        num_tasks += tpm->thread_task_counts[i].value;
-    }
-    tp->nb_tasks = num_tasks;
     if(tp->nb_tasks == 0 && tp->nb_pending_actions == 0) {
         /* We are now IDLE */
         gettimeofday(&tpm->stats_time_last_idle, NULL);
@@ -477,7 +465,6 @@ static void parsec_termdet_threadcount_check_state_workload_changed(parsec_termd
 
 static int parsec_termdet_threadcount_taskpool_set_nb_tasks(parsec_taskpool_t *tp, int v)
 {
-    int nb_threads = vpmap_get_nb_threads_in_vp(0);
     parsec_termdet_threadcount_monitor_t *tpm;
     assert( tp->tdm.module != NULL );
     assert( tp->tdm.module == &parsec_termdet_threadcount_module.module );
@@ -485,16 +472,6 @@ static int parsec_termdet_threadcount_taskpool_set_nb_tasks(parsec_taskpool_t *t
     assert( v >= 0 );
     tpm = (parsec_termdet_threadcount_monitor_t *)tp->tdm.monitor;
 
-    /* zero out all thread-local values */
-    for (int i = 0; i < nb_threads; ++i) {
-        tpm->thread_task_counts[i].value = 0;
-    }
-
-    /* set this thread's value */
-    int thread_id = parsec_my_execution_stream()->th_id;
-    assert(thread_id < tpm->nb_threads);
-    tpm->thread_task_counts[thread_id].value = v;
-#if 0
     parsec_atomic_rwlock_wrlock(&tpm->rw_lock);
     if( (int)tp->nb_tasks != v) {
         tp->nb_tasks = v;
@@ -502,7 +479,6 @@ static int parsec_termdet_threadcount_taskpool_set_nb_tasks(parsec_taskpool_t *t
     }
     if( tp->tdm.monitor != PARSEC_TERMDET_THREADCOUNT_TERMINATED )
         parsec_atomic_rwlock_wrunlock(&tpm->rw_lock);
-#endif // 0
     return v;
 }
 
@@ -536,10 +512,26 @@ static int parsec_termdet_threadcount_taskpool_addto_nb_tasks(parsec_taskpool_t 
 
     parsec_termdet_threadcount_monitor_t *tpm;
     tpm = (parsec_termdet_threadcount_monitor_t *)tp->tdm.monitor;
-    /* set this thread's value */
-    int thread_id = parsec_my_execution_stream()->th_id;
-    assert(thread_id < tpm->nb_threads);
-    tpm->thread_task_counts[thread_id].value += v;
+    /* add to this thread's value */
+    if (NULL != current_taskpool.taskpool) {
+        if (current_taskpool.taskpool != tp) {
+            PARSEC_DEBUG_VERBOSE(0, parsec_debug_output,
+                                 "TERMDET: Mismatching taskpools detected! Forgot to switch taskpools? (%p vs %p)",
+                                 tp, tpm->thread_task_counts[thread_id].current_tp);
+        }
+        current_taskpool.value += v;
+    } else {
+        /* No active taskpool set, push directly into global counter */
+        int tmp = parsec_atomic_fetch_add_int32(&tp->nb_tasks, v);
+        ret = tmp + v;
+        if (tmp == 0 || ret == 0) {
+            /* Slow path: our changes might cause a state change so take a lock and check */
+            parsec_atomic_rwlock_wrlock(&tpm->rw_lock);
+            parsec_termdet_threadcount_check_state_workload_changed(tpm, tp);
+            if( tp->tdm.monitor != PARSEC_TERMDET_THREADCOUNT_TERMINATED )
+                parsec_atomic_rwlock_wrunlock(&tpm->rw_lock);
+        }
+    }
 
     ret = tp->nb_tasks + v;
 
@@ -737,6 +729,34 @@ static void parsec_termdet_threadcount_msg_up(parsec_termdet_threadcount_msg_up_
     parsec_termdet_threadcount_check_state_message_received(tpm, tp);
     if(PARSEC_TERMDET_THREADCOUNT_TERMINATED != tp->tdm.monitor)
         parsec_atomic_rwlock_wrunlock(&tpm->rw_lock);
+}
+
+static int parsec_termdet_threadcount_switch_taskpool(parsec_taskpool_t *tp)
+{
+    parsec_taskpool_t *old_tp = current_taskpool.taskpool;
+    parsec_termdet_threadcount_monitor_t *old_tpm;
+    old_tpm = (parsec_termdet_threadcount_monitor_t *)old_tp->tdm.monitor;
+
+    if (NULL != old_tp) {
+        /* flush the local counter to the global counter */
+        current_taskpool.taskpool = NULL;
+        int64_t value = current_taskpool.value;
+        current_taskpool.value = 0;
+        parsec_termdet_threadcount_taskpool_addto_nb_tasks(old_tp, value);
+        /* release the pending action on the old taskpool */
+        parsec_termdet_threadcount_taskpool_addto_nb_pa(old_tp, -1);
+    }
+
+    if (NULL != tp && tp->tdm.module == &parsec_termdet_threadcount_module.module) {
+        /* add a pending action to the new taskpool */
+        parsec_termdet_threadcount_taskpool_addto_nb_pa(tp, 1);
+        current_taskpool.taskpool = tp;
+    } else {
+        /* the new taskpool uses a different module, ignore it */
+        current_taskpool.taskpool = NULL;
+    }
+
+    return PARSEC_SUCCESS;
 }
 
 static int parsec_termdet_threadcount_write_stats(parsec_taskpool_t *tp, FILE *fp)

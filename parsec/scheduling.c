@@ -487,6 +487,7 @@ int __parsec_context_wait( parsec_execution_stream_t* es )
     parsec_task_t* task;
     int nbiterations = 0, distance, rc;
     struct timespec rqtp;
+    parsec_taskpool_t *taskpool = NULL;
 
     rqtp.tv_sec = 0;
     misses_in_a_row = 1;
@@ -558,13 +559,19 @@ int __parsec_context_wait( parsec_execution_stream_t* es )
 
         if( task != NULL ) {
             misses_in_a_row = 0;  /* reset the misses counter */
+            if (taskpool != task->taskpool) {
+                if (NULL != taskpool) {
+                    taskpool->tdm.module->switch_taskpool(task->taskpool);
+                }
+                taskpool = task->taskpool;
+            }
 
             rc = __parsec_task_progress(es, task, distance);
             (void)rc;  /* for now ignore the return value */
 
             nbiterations++;
-        } else if (PARSEC_THREAD_IS_MASTER(es)) {
-            query_termination(parsec_context);
+        } else if (NULL != taskpool) {
+            taskpool->tdm.module->switch_taskpool(NULL);
         }
     }
 
