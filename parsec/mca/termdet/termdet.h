@@ -262,6 +262,21 @@ typedef int (*parsec_termdet_incoming_message_end_fn_t)(parsec_taskpool_t *tp,
                                                         const parsec_remote_deps_t *msg);
 
 /**
+ * @brief Signals that a thread changes the currently active taskpool.
+ *
+ * @details Threads should signal when switching between taskpools from which
+ *          they execute tasks. Passing NULL signals that the thread fell
+ *          idle, i.e., no active tasks were found. Between taskpool switches,
+ *          the number of discovered and executed tasks may be cached. A taskpool
+ *          switch will cause the counter to be flushed to the global counter.
+ *          If no active taskpool is set, task counter events will be attributed
+ *          to the global counter directly.
+ * @param[INOUT] tp a taskpool
+ * @return PARSEC_SUCCESS except if a fatal error occurs.
+ */
+typedef int (*parsec_termdet_switch_taskpool_fn_t)(parsec_taskpool_t *tp);
+
+/**
  * @brief convenience function to select a dynamic termination detection module
  *
  * @details this functions uses the MCA mechanism to select the user-preferred
@@ -329,6 +344,7 @@ struct parsec_termdet_base_module_1_0_0_t {
     parsec_termdet_outgoing_message_pack_fn_t  outgoing_message_pack;
     parsec_termdet_incoming_message_start_fn_t incoming_message_start;
     parsec_termdet_incoming_message_end_fn_t   incoming_message_end;
+    parsec_termdet_switch_taskpool_fn_t        switch_taskpool;
     parsec_termdet_write_stats_fn_t            write_stats;
 };
 
