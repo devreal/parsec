@@ -11,8 +11,11 @@
 #include "parsec/class/parsec_hash_table.h"
 #include "parsec/mca/mca.h"
 #include "parsec/mca/mca_repository.h"
+#include "parsec/utils/mca_param.h"
 
 static parsec_hash_table_t parsec_termdet_opened_modules;
+
+static char* termdet_module_name = NULL;
 
 typedef struct {
     parsec_hash_table_item_t ht_item;
@@ -58,6 +61,14 @@ int parsec_termdet_init(void)
 {
     parsec_hash_table_init(&parsec_termdet_opened_modules, offsetof(parsec_termdet_opened_module_t, ht_item), 4,
                            parsec_termdet_opened_module_key_fn, NULL);
+
+
+    parsec_mca_param_reg_string_name("termdet", "module",
+        "The distributed termination detection module to use (fourcounter, threadcount). "
+        "Note that not all DSLs work with all termdet modules, e.g., DTD will not work "
+        "with the threadcount module.", false, false, "fourcounter", &termdet_module_name);
+
+
     return PARSEC_SUCCESS;
 }
 
@@ -106,7 +117,7 @@ int parsec_termdet_open_module(parsec_taskpool_t *tp, char *name)
 int parsec_termdet_open_dyn_module(parsec_taskpool_t *tp)
 {
     //TODO Once there are multiple choices for a dynamic module, this function should evolve
-    return parsec_termdet_open_module(tp, "fourcounter");
+    return parsec_termdet_open_module(tp, termdet_module_name);
 }
 
 static int parsec_termdet_close_module(void *item, void *data)
@@ -130,5 +141,6 @@ int parsec_termdet_close_modules(void)
 int parsec_termdet_fini(void)
 {
     parsec_hash_table_fini(&parsec_termdet_opened_modules);
+    free(termdet_module_name);
     return PARSEC_SUCCESS;
 }

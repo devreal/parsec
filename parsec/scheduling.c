@@ -410,7 +410,7 @@ int __parsec_complete_execution( parsec_execution_stream_t *es,
 
     /* Release the execution context */
     (void)task->task_class->release_task( es, task );
-    
+
     return rc;
 }
 
@@ -562,6 +562,8 @@ int __parsec_context_wait( parsec_execution_stream_t* es )
             if (taskpool != task->taskpool) {
                 if (NULL != taskpool) {
                     taskpool->tdm.module->switch_taskpool(task->taskpool);
+                } else {
+                    task->taskpool->tdm.module->switch_taskpool(task->taskpool);
                 }
                 taskpool = task->taskpool;
             }
@@ -572,6 +574,7 @@ int __parsec_context_wait( parsec_execution_stream_t* es )
             nbiterations++;
         } else if (NULL != taskpool) {
             taskpool->tdm.module->switch_taskpool(NULL);
+            taskpool = NULL;
         }
     }
 
@@ -627,7 +630,7 @@ int parsec_context_add_taskpool( parsec_context_t* context, parsec_taskpool_t* t
     PARSEC_PINS_TASKPOOL_INIT(tp);  /* PINS taskpool initialization */
 
     /* If the DSL did not install a termination detection module,
-     * assume that the old behavior (local detection when local 
+     * assume that the old behavior (local detection when local
      * number of tasks is 0) is expected: install the local termination
      * detection module, and declare the taskpool as ready */
     if( tp->tdm.module == NULL ) {
@@ -636,7 +639,7 @@ int parsec_context_add_taskpool( parsec_context_t* context, parsec_taskpool_t* t
         tp->tdm.module->monitor_taskpool(tp, parsec_taskpool_termination_detected);
         tp->tdm.module->taskpool_ready(tp);
     }
-    
+
     /* Update the number of pending taskpools */
     (void)parsec_atomic_fetch_inc_int32( &context->active_taskpools );
     /* TODO: DTD has its own list of taskpools in the context, need to merge */
@@ -669,7 +672,7 @@ int parsec_context_add_taskpool( parsec_context_t* context, parsec_taskpool_t* t
             __parsec_schedule(context->virtual_processes[vpid]->execution_streams[0],
                               startup_list[vpid], 0);
         }
-    } 
+    }
 
     return 0;
 }
